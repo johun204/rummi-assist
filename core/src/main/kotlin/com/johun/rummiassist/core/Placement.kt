@@ -20,7 +20,14 @@ internal object Placement {
 
     /** tiles: 세트별 타일(그룹은 놓을 순서로 재정렬), targets: 타일별 목적지(null = 제자리) */
     /** free: 지금도 비어 있고 최종 배치에서도 비는 칸(순환을 풀 때 잠시 내려놓을 자리), 주변이 빈 칸부터 */
-    class Out(val tiles: List<List<Pair<SetTile, DetectedTile>>>, val targets: List<List<Rect?>>, val placed: List<Boolean>, val free: List<Rect> = emptyList())
+    /**
+     * relaxed: 판에 빈 자리가 없어 '게임이 자동으로 판을 줄여 자리를 만든다'고 보고 놓은 세트
+     * (기존 세트 끝에 붙이거나 줄 끝 너머). 이 세트들의 타일은 게임이 다시 배치하므로 위치 검사에서 뺀다.
+     */
+    class Out(
+        val tiles: List<List<Pair<SetTile, DetectedTile>>>, val targets: List<List<Rect?>>, val placed: List<Boolean>,
+        val free: List<Rect> = emptyList(), val relaxed: List<Boolean> = placed.map { false },
+    )
 
     /**
      * repack = true: 그대로 둘 세트도 '움직일 수 있는' 것으로 넘겨받는다. 다만 제자리에 둘 수 있으면 그대로 두고,
@@ -33,16 +40,19 @@ internal object Placement {
     fun place(rec: Recognizer.Result, sets: List<Pending>, repack: Boolean = false, linked: (Set<Int>) -> Set<Int> = { it }): Out {
         var stuck = emptySet<Int>()
         var out = placeOnce(rec, sets, repack, stuck)
-        repeat(6) {
+        for (round in 0 until 6) {
             val now = linked(sets.indices.filter { !out.placed[it] }.toSet())
-            if (now == stuck || now.isEmpty()) return out
+            if (now.isEmpty()) return out
+            if (now == stuck) break
             stuck = now
             out = placeOnce(rec, sets, repack, stuck)
         }
-        return out
+        // 그래도 못 놓은(+함께 해야 하는) 세트는 게임의 자동 축소를 믿고 놓는다
+        val left = linked(sets.indices.filter { !out.placed[it] }.toSet())
+        return if (left.isEmpty()) out else placeOnce(rec, sets, repack, left, relax = true)
     }
 
-    private fun placeOnce(rec: Recognizer.Result, sets: List<Pending>, repack: Boolean, stuck: Set<Int>): Out {
+    private fun placeOnce(rec: Recognizer.Result, sets: List<Pending>, repack: Boolean, stuck: Set<Int>, relax: Boolean = false): Out {
         val orig = rec.boardSets
         val board = rec.board
         if (rec.tiles.isEmpty()) return Out(sets.map { it.tiles }, sets.map { s -> s.tiles.map { null } }, sets.map { false })
@@ -277,7 +287,39 @@ internal object Placement {
             val crowd = (-1..1).count { d -> (c + d) in (now[r] ?: emptySet<Int>()) || (c + d) in (finalOcc[r] ?: emptySet<Int>()) }
             free += rectOf(r, c) to crowd
         }
-        return Out(outTiles, outTargets, placed.map { it != null }, free.sortedBy { it.second }.map { it.first })
+        val relaxedFlags = BooleanArray(sets.size)
+        if (relax) for (i in stuck) {
+            // 자리 무시 배치: 남는 판 타일이 있으면 그 자리 그대로 두고 새 타일은 바로 옆(판 밖이나 이웃 세트 쪽이어도),
+            // 없으면 가장 덜 찬 줄의 끝 너머. 게임이 판을 자동으로 줄여 자리를 만든다.
+            val s = sets[i]
+            val stays = s.tiles.filter { (st, d) -> !st.fromHand && s.anchor != null && d in orig[s.anchor] }.mapNotNull { p -> cellOf(p.second)?.let { p to it } }
+            var tiles = s.tiles
+            val spot: Pair<Row, Int>
+            if (stays.isNotEmpty()) {
+                val r = stays.groupBy { it.second.first }.maxBy { it.value.size }.key
+                if (isGroup(s.tiles.map { it.first })) {
+                    val inRow = stays.filter { it.second.first == r }.sortedBy { it.second.second }
+                    tiles = inRow.map { it.first } + s.tiles.filter { p -> inRow.none { it.first === p } }
+                    spot = r to inRow.first().second.second
+                } else {
+                    val (p, c) = stays.first { it.second.first == r }
+                    spot = r to c.second - s.tiles.indexOf(p)
+                }
+            } else {
+                val r = rows.minBy { r -> ((now[r] ?: emptySet()) + (occ[r]?.keys ?: emptySet())).maxOrNull() ?: -99 }
+                val last = ((now[r] ?: emptySet()) + (occ[r]?.keys ?: emptySet())).maxOrNull()
+                spot = r to (if (last == null) colRange(r).first else last + 2)
+            }
+            placed[i] = spot
+            finalTiles[i] = tiles
+            relaxedFlags[i] = true
+            outTiles[i] = tiles
+            outTargets[i] = tiles.mapIndexed { k, (st, d) ->
+                val c = spot.first to spot.second + k
+                if (!st.fromHand && cellOf(d) == c) null else rectOf(c.first, c.second)
+            }
+        }
+        return Out(outTiles, outTargets, placed.map { it != null }, free.sortedBy { it.second }.map { it.first }, relaxedFlags.toList())
     }
 
     /** 판 타일 크기. 판이 비었으면 손패 타일의 75%로 가정. */

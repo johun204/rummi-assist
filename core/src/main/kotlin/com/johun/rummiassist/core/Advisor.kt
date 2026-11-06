@@ -15,8 +15,14 @@ object Advisor {
         var via: Rect? = null
         val isPark get() = parkFor != null
     }
-    /** noRoom: 판에 이 세트를 놓을 빈 자리를 못 찾음(화살표 없음), step: 속한 단계 번호 */
-    class PlanSet(val number: Int, val status: Status, val tiles: List<PlanTile>, val noRoom: Boolean = false, val step: Int = 1)
+    /**
+     * noRoom: 놓을 자리를 못 찾음(화살표 없음), step: 속한 단계 번호,
+     * relaxed: 빈 자리가 없어 게임의 자동 축소를 믿고 놓은 세트(목적지는 대략적인 위치)
+     */
+    class PlanSet(
+        val number: Int, val status: Status, val tiles: List<PlanTile>, val noRoom: Boolean = false, val step: Int = 1,
+        val relaxed: Boolean = false,
+    )
 
     /**
      * 실행 단계. 1단계부터 순서대로, 각 단계를 끝까지 하면 그 시점의 판이 규칙에 맞는다(valid).
@@ -214,7 +220,7 @@ object Advisor {
                 anchorKinds != null && plan.none { it.moved } && sameMultiset(anchorKinds, boardKinds) -> Status.EXTENDED
                 else -> Status.REARRANGED
             }
-            PlanSet(0, status, plan, noRoom = !placed.placed[i])
+            PlanSet(0, status, plan, noRoom = !placed.placed[i], relaxed = placed.relaxed[i])
         }
         // 자리를 다시 잡느라 함께 넘겼지만 결국 제자리인 기존 세트는 목록에서 빼고 '그대로 둘 세트'로 센다
         val (stillKept, changed) = normalizeSwaps(rec, out).partition { p -> p.tiles.none { it.tile.fromHand } && p.tiles.all { it.target == null } && !p.noRoom }
@@ -252,7 +258,7 @@ object Advisor {
                 }
             }
         }
-        return sets.mapIndexed { i, p -> PlanSet(p.number, p.status, tiles[i], p.noRoom, p.step) }
+        return sets.mapIndexed { i, p -> PlanSet(p.number, p.status, tiles[i], p.noRoom, p.step, p.relaxed) }
     }
 
     /** 원래 판 세트 번호를 공유하는 것끼리 묶은 연결 요소(세트 번호 목록들) */
@@ -290,6 +296,7 @@ object Advisor {
             val ps = ArrayList<BoardCheck.P>()
             for (t in rec.board) if (t !in inPlan) ps += BoardCheck.P(t.kind, t.rect.cx, t.rect.cy)
             for (st in sets) for (pt in st.tiles) {
+                if (st.relaxed) continue // 게임이 다시 배치하는 세트(원래 세트째 묶여 있으므로 빼도 나머지 판엔 영향 없음)
                 val r = if (pt in applied) pt.target else if (pt in parked) pt.via else if (pt.tile.fromHand) null else pt.screen?.rect
                 r?.let { ps += BoardCheck.P(pt.tile.kind, it.cx, it.cy) }
             }
@@ -355,8 +362,9 @@ object Advisor {
                     val t = m.target!!
                     return cur.any { p -> kotlin.math.abs(p.cx - t.cx) < tw * 0.8 && kotlin.math.abs(p.cy - t.cy) < th * 0.8 }
                 }
-                val eligible = left.filter { !blockedNow(it) }
-                val parkable = left.filter { it !in parked && !it.tile.fromHand }
+                val relaxedMove = { m: PlanTile -> sets.first { m in it.tiles }.relaxed }
+                val eligible = left.filter { relaxedMove(it) || !blockedNow(it) }
+                val parkable = left.filter { it !in parked && !it.tile.fromHand && !relaxedMove(it) }
                 if (eligible.isEmpty() && parkable.isNotEmpty()) {
                     // 서로의 자리로 가야 해서(순환) 아무것도 먼저 못 옮김 → 하나를 빈 칸에 잠시 내려놓는다(타일마다 한 번만)
                     val m = parkable.minBy { badness(applied + it) }
@@ -380,7 +388,7 @@ object Advisor {
         var n = 0
         return order.mapIndexed { k, (idx, ok) ->
             val ss = idx.sortedBy { sets[it].status.ordinal.let { o -> if (o == 1) -1 else o } }
-                .map { i -> val p = sets[i]; PlanSet(++n, p.status, p.tiles, p.noRoom, k + 1) }
+                .map { i -> val p = sets[i]; PlanSet(++n, p.status, p.tiles, p.noRoom, k + 1, p.relaxed) }
             Step(k + 1, ss, ok, stepMoves[k].takeIf { it.isNotEmpty() })
         }
     }

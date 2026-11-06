@@ -15,7 +15,9 @@ fun layoutProblem(a: Advisor.Advice): String? {
     val tw = if (rec.board.isNotEmpty()) ref.width else (ref.width * 0.75).toInt()
     val th = if (rec.board.isNotEmpty()) ref.height else (ref.height * 0.75).toInt()
     val blockedSteps = a.steps.filter { it.blocked }.map { it.number }.toSet()
-    for (s in a.sets) if (s.step !in blockedSteps) for (pt in s.tiles) {
+    // 자동 축소 배치 세트는 게임이 다시 놓으므로 위치 검사에서 뺀다(원래 판 세트째 묶여 있음)
+    val relaxedTiles = a.sets.filter { it.relaxed }.flatMap { s -> s.tiles }.toSet()
+    for (s in a.sets) if (s.step !in blockedSteps && !s.relaxed) for (pt in s.tiles) {
         val r = pt.target ?: if (pt.tile.fromHand) return "손패 ${pt.tile} 목적지 없음" else continue
         if (r.bottom > rec.rackTop || r.left < 0 || r.right > rec.width || r.top < 0) return "${pt.tile} 목적지가 판 밖 $r"
         // 같은 줄에서 한두 칸 옆으로만 밀기(제자리 세트 정리 아닌 단순 이동) 금지
@@ -26,8 +28,9 @@ fun layoutProblem(a: Advisor.Advice): String? {
     // 이동 순서대로 하나씩 옮길 때, 놓는 칸은 그 순간 비어 있어야 한다(타일 위에 덮어 놓기 금지)
     run {
         val pos = HashMap<Any, com.johun.rummiassist.core.Rect>()
-        for (t in rec.board) pos[t] = t.rect
+        for (t in rec.board) if (relaxedTiles.none { it.screen === t }) pos[t] = t.rect
         for (m in a.moves) {
+            if (m in relaxedTiles) continue
             val t = m.target!!
             val src: Any = m.screen ?: m
             pos.entries.firstOrNull { (k, r) -> k !== src && kotlin.math.abs(r.cx - t.cx) < tw * 0.8 && kotlin.math.abs(r.cy - t.cy) < th * 0.8 }
@@ -41,7 +44,7 @@ fun layoutProblem(a: Advisor.Advice): String? {
         if (step.blocked) continue
         val ps = ArrayList<BoardCheck.P>()
         for (t in rec.board) if (t !in inPlan) ps += BoardCheck.P(t.kind, t.rect.cx, t.rect.cy)
-        for (s in a.sets) for (pt in s.tiles) {
+        for (s in a.sets) if (!s.relaxed) for (pt in s.tiles) {
             val r = if (s.step <= upto && s.step !in blockedSteps) pt.target ?: pt.screen?.rect else if (pt.tile.fromHand) null else pt.screen?.rect
             r?.let { ps += BoardCheck.P(pt.tile.kind, it.cx, it.cy) }
         }

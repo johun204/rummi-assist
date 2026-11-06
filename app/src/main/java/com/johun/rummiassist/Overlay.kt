@@ -40,7 +40,7 @@ fun roundRect(fill: Int, radius: Float, stroke: Int = 0, strokeW: Float = 0f, da
 
 /**
  * 게임 화면 위 표시(터치는 통과).
- * 기본(focus = 단계 번호): 남은 이동 중 앞의 3개만 순서대로 — ①은 굵게, ②③은 흐리게.
+ * 기본(focus = 단계 번호): 남은 이동 중 앞의 4개만 순서대로 — ①은 굵게, ②③④는 흐리게.
  *   이동마다 출발 타일 테두리 + 놓을 자리(반투명 칸) + 화살표 + 순서 번호.
  * 전체(focus = null): 모든 이동을 세트 색으로.
  * 이미 옮긴 타일은 놓은 자리에 ✓.
@@ -104,9 +104,9 @@ class HighlightView(context: Context) : View(context) {
             }
             return
         }
-        // 남은 이동 중 앞의 3개(지금 단계부터 이어서)
+        // 남은 이동 중 앞의 4개(지금 단계부터 이어서)
         val all = a.moves
-        val next = all.withIndex().filter { (_, pt) -> !done(pt) && src(pt) != null }.take(3)
+        val next = all.withIndex().filter { (_, pt) -> !done(pt) && src(pt) != null }.take(4)
         for ((k, iv) in next.withIndex().reversed()) {
             val (idx, pt) = iv
             val col = if (k == 0) 0xFFFFEB3B.toInt() else 0xFFFFFFFF.toInt()
@@ -311,6 +311,7 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
                     when {
                         step.blocked -> "⚠ 판에 빈 자리가 부족해 할 수 없는 단계"
                         prog != null && prog.stepDone(step) -> "✓ 완료한 단계"
+                        step.sets.any { it.relaxed } -> "손패 ${step.handTiles}장 · 판이 꽉 차면 게임이 자동으로 줄여 자리를 만들어요"
                         else -> "손패 ${step.handTiles}장 · 이 단계까지 하면 판이 유효해요"
                     },
                     12f, if (step.blocked) 0xFFFF8A80.toInt() else 0xFFA5D6A7.toInt(),

@@ -270,6 +270,7 @@ class SyntheticTest {
             val step = a.steps.firstOrNull() ?: continue
             if (r.board.isEmpty()) continue
             if (step.blocked) continue
+            if (step.sets.any { it.relaxed }) continue // 게임의 자동 축소 재배치는 그림으로 흉내 낼 수 없음
             if (com.johun.rummiassist.core.BoardCheck.problem(r.board.map { com.johun.rummiassist.core.BoardCheck.P(it.kind, it.rect.cx, it.rect.cy) },
                     r.board.first().rect.width, r.board.first().rect.height) != null) continue
             tried++

@@ -60,4 +60,39 @@ class RegressionTest {
             assertTrue(a.sets.all { s -> s.tiles.any { it.target != null || it.tile.fromHand } })
         }
     }
+
+    /** 2026-11-07 제보: 손패 B1 B2 를 판의 B3 B4 B5 왼쪽에 붙일 수 있는데 '자리 부족'으로 아무것도 못 내게 안내 */
+    private fun screen2(): Recognizer.Result {
+        val col = intArrayOf(367, 482, 596, 711, 826, 940, 1055, 1169, 1284, 1398, 1513, 1627)
+        fun row(cy: Int, vararg t: Pair<Int, String>) = t.map { (c, s) -> tile(s, col[c], cy) }
+        val sets = listOf(
+            row(220, 0 to "J", 1 to "K11", 2 to "B11"),
+            row(220, 4 to "K8", 5 to "O8", 6 to "R8"),
+            row(220, 8 to "R4", 9 to "R5", 10 to "R6", 11 to "R7"),
+            row(395, 0 to "K11", 1 to "O11", 2 to "B11"),
+            row(395, 4 to "O3", 5 to "K3", 6 to "R3", 7 to "B3"),
+            row(395, 9 to "K4", 10 to "K5", 11 to "K6"),
+            row(568, 0 to "O6", 1 to "O7", 2 to "O8"),
+            row(568, 5 to "B5", 6 to "B6", 7 to "B7", 8 to "B8", 9 to "B9"),
+            row(740, 0 to "O10", 1 to "O11", 2 to "O12", 3 to "O13"),
+            row(740, 5 to "K8", 6 to "R8", 7 to "B8"),
+            row(740, 9 to "B3", 10 to "B4", 11 to "B5"),
+        )
+        val hand = listOf("K5", "K7", "K13", "K13", "B1", "B2", "B9", "B12", "B12", "O1").mapIndexed { i, s -> tile(s, 447 + i * 119, 1005, true) } +
+            listOf("O10", "R4", "R7", "R9", "R11", "R13", "J").mapIndexed { i, s -> tile(s, 447 + i * 119, 1160, true) }
+        return Recognizer.Result(sets.flatten() + hand, sets, 930, 1972, 1248)
+    }
+
+    @Test fun fullBoardStillPlays() {
+        val r = screen2()
+        val a = Advisor.advise(r, true, false)
+        println("full board: ${a.message} 이동 ${a.moves.size}개, 단계 ${a.steps.map { "${it.number}(손패${it.handTiles},이동${it.moves.size},blocked=${it.blocked})" }}")
+        for (s in a.sets) println("   #${s.number} ${s.status}${if (s.relaxed) " (자동 축소)" else ""}: " + s.tiles.joinToString(" ") { "${it.tile}${if (it.target != null) "→" else ""}" })
+        assertTrue("자리 부족으로 막힘", a.steps.none { it.blocked })
+        assertEquals(a.handPlayed, a.steps.sumOf { it.handTiles })
+        // B1 B2 는 B3 B4 B5 왼쪽(같은 줄)에 붙는다
+        val b12 = a.sets.first { s -> s.tiles.any { it.tile.kind.toString() == "B1" } }
+        assertTrue(b12.tiles.filter { !it.tile.fromHand }.all { it.target == null })
+        assertEquals(null, layoutProblem(a))
+    }
 }
