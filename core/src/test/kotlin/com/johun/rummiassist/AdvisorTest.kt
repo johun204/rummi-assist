@@ -15,7 +15,7 @@ class AdvisorTest {
         for (name in TRUTH.keys) {
             val img = loadImg(name)
             val r = rec.recognize(img.px, img.w, img.h)
-            assertEquals(name, expectedBoardSets[name], Advisor.boardSets(r.board).size)
+            assertEquals(name, expectedBoardSets[name], r.boardSets.size)
             for (meld in listOf(true, false)) {
                 val t0 = System.currentTimeMillis()
                 val a = Advisor.advise(r, meld)

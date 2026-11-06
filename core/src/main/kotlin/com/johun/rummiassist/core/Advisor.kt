@@ -1,7 +1,5 @@
 package com.johun.rummiassist.core
 
-import kotlin.math.abs
-
 /** 인식 결과 → 추천 수. 판에 이미 있는 세트는 가능한 한 그대로 두고, 바뀌는 세트만 알려 준다. */
 object Advisor {
 
@@ -30,7 +28,7 @@ object Advisor {
         for ((k, n) in all) if (!k.isJoker && n > 2) warnings += "$k 가 ${n}장으로 인식됨(최대 2장)"
         if ((all[TileKind.JOKER] ?: 0) > 2) warnings += "조커가 3장 이상으로 인식됨"
 
-        val origSets = boardSets(boardTiles)
+        val origSets = rec.boardSets
         val validOrig = origSets.filter { s -> Solver.isValidSet(s.map { it.kind }) }
         for (s in origSets - validOrig.toSet()) warnings += "판 세트 인식 이상: ${s.joinToString(" ") { it.kind.toString() }}"
 
@@ -147,26 +145,5 @@ object Advisor {
         val a = Solver.emptyCounts(); var j = 0
         for (t in tiles) if (t.kind.isJoker) j++ else a[t.kind.color!!.ordinal][t.kind.value]++
         return a to j
-    }
-
-    /** 판 타일을 세트로 묶는다: 같은 줄에서 타일 간격(가장 좁은 간격)의 1.35배 이상 떨어지면 다른 세트. */
-    fun boardSets(board: List<DetectedTile>): List<List<DetectedTile>> {
-        val rows = ArrayList<MutableList<DetectedTile>>()
-        for (t in board.sortedBy { it.glyph.cy }) {
-            val row = rows.firstOrNull { r -> abs(r[0].glyph.cy - t.glyph.cy) < r[0].glyph.height / 2 }
-            if (row != null) row += t else rows += mutableListOf(t)
-        }
-        rows.forEach { r -> r.sortBy { it.glyph.cx } }
-        val pitch = rows.flatMap { r -> r.zipWithNext { a, b -> b.glyph.cx - a.glyph.cx } }.minOrNull() ?: 0
-        val sets = ArrayList<List<DetectedTile>>()
-        for (r in rows) {
-            var cur = mutableListOf(r[0])
-            for ((a, b) in r.zipWithNext()) {
-                if (b.glyph.cx - a.glyph.cx > pitch * 1.35) { sets += cur; cur = mutableListOf() }
-                cur += b
-            }
-            sets += cur
-        }
-        return sets.sortedWith(compareBy({ it[0].glyph.cy }, { it[0].glyph.cx }))
     }
 }
