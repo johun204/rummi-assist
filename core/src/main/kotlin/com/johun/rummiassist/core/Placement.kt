@@ -288,35 +288,62 @@ internal object Placement {
             free += rectOf(r, c) to crowd
         }
         val relaxedFlags = BooleanArray(sets.size)
-        if (relax) for (i in stuck) {
-            // 자리 무시 배치: 남는 판 타일이 있으면 그 자리 그대로 두고 새 타일은 바로 옆(판 밖이나 이웃 세트 쪽이어도),
-            // 없으면 가장 덜 찬 줄의 끝 너머. 게임이 판을 자동으로 줄여 자리를 만든다.
-            val s = sets[i]
-            val stays = s.tiles.filter { (st, d) -> !st.fromHand && s.anchor != null && d in orig[s.anchor] }.mapNotNull { p -> cellOf(p.second)?.let { p to it } }
-            var tiles = s.tiles
-            val spot: Pair<Row, Int>
-            if (stays.isNotEmpty()) {
-                val r = stays.groupBy { it.second.first }.maxBy { it.value.size }.key
-                if (isGroup(s.tiles.map { it.first })) {
-                    val inRow = stays.filter { it.second.first == r }.sortedBy { it.second.second }
-                    tiles = inRow.map { it.first } + s.tiles.filter { p -> inRow.none { it.first === p } }
-                    spot = r to inRow.first().second.second
-                } else {
-                    val (p, c) = stays.first { it.second.first == r }
-                    spot = r to c.second - s.tiles.indexOf(p)
-                }
-            } else {
-                val r = rows.minBy { r -> ((now[r] ?: emptySet()) + (occ[r]?.keys ?: emptySet())).maxOrNull() ?: -99 }
-                val last = ((now[r] ?: emptySet()) + (occ[r]?.keys ?: emptySet())).maxOrNull()
-                spot = r to (if (last == null) colRange(r).first else last + 2)
+        if (relax) {
+            // 자리 무시 배치: 게임이 판을 자동으로 줄여 자리를 만든다고 보고, 판 밖으로 나가도 놓는다.
+            // 기존 세트 끝에 붙이는 건 이웃 세트와 겹쳐 보여도 게임이 자리를 만들어 준다(사용자 확인).
+            // 다만 같은 원래 세트를 나눠 쓰는 다른 세트의 남는 타일이나, 이미 정한 자리와 겹치면 세트째 줄 끝으로 옮긴다.
+            val fixed = HashMap<Row, HashSet<Int>>()
+            fun stayCells(i: Int) = sets[i].tiles.filter { (st, d) -> !st.fromHand && sets[i].anchor != null && d in orig[sets[i].anchor!!] }
+                .mapNotNull { p -> cellOf(p.second)?.let { p to it } }
+            // 남는 타일이 많은 세트부터 자리를 정하고, 정한 자리만 막는다(적게 남는 세트가 비켜 준다).
+            fun free(r: Row, cols: List<Int>, own: Set<Int>): Boolean {
+                val f = fixed[r] ?: return true
+                return cols.all { c -> (c !in f || c in own) } && (cols.min() - 1).let { it !in f || it in own } && (cols.max() + 1).let { it !in f || it in own }
             }
-            placed[i] = spot
-            finalTiles[i] = tiles
-            relaxedFlags[i] = true
-            outTiles[i] = tiles
-            outTargets[i] = tiles.mapIndexed { k, (st, d) ->
-                val c = spot.first to spot.second + k
-                if (!st.fromHand && cellOf(d) == c) null else rectOf(c.first, c.second)
+            for (i in stuck.sortedByDescending { stayCells(it).size }) {
+                val s = sets[i]
+                val stays = stayCells(i)
+                var tiles = s.tiles
+                var spot: Pair<Row, Int>? = null
+                if (stays.isNotEmpty()) {
+                    val r = stays.groupBy { it.second.first }.maxBy { it.value.size }.key
+                    val inRow = stays.filter { it.second.first == r }.sortedBy { it.second.second }
+                    val own = inRow.map { it.second.second }.toSet()
+                    val contiguous = own.max() - own.min() + 1 == own.size && inRow.size == stays.size
+                    if (contiguous) {
+                        if (isGroup(s.tiles.map { it.first })) {
+                            val rest = s.tiles.filter { p -> inRow.none { it.first === p } }
+                            // 새 타일을 오른쪽에, 안 되면 왼쪽에
+                            val right = inRow.map { it.first } + rest
+                            val left = rest + inRow.map { it.first }
+                            val c0r = own.min(); val c0l = own.min() - rest.size
+                            if (free(r, (c0r until c0r + s.tiles.size).toList(), own)) { tiles = right; spot = r to c0r }
+                            else if (free(r, (c0l until c0l + s.tiles.size).toList(), own)) { tiles = left; spot = r to c0l }
+                        } else {
+                            val (p, c) = inRow.first()
+                            val c0 = c.second - s.tiles.indexOf(p)
+                            if (free(r, (c0 until c0 + s.tiles.size).toList(), own)) spot = r to c0
+                        }
+                    }
+                }
+                if (spot == null) {
+                    // 세트째 가장 덜 찬 줄의 끝 너머로(남는 타일 없이 전부 옮김) → 원래 자리는 비게 된다
+                    tiles = s.tiles
+                    val all = { r: Row -> (fixed[r] ?: emptySet()) + (finalOcc[r] ?: emptySet()) + (now[r] ?: emptySet()) }
+                    val r = rows.minBy { r -> all(r).maxOrNull() ?: -99 }
+                    val last = all(r).maxOrNull()
+                    spot = r to (if (last == null) colRange(r).first else last + 2)
+                }
+                for (k in tiles.indices) fixed.getOrPut(spot.first) { HashSet() } += spot.second + k
+                placed[i] = spot
+                finalTiles[i] = tiles
+                relaxedFlags[i] = true
+                outTiles[i] = tiles
+                val sp = spot
+                outTargets[i] = tiles.mapIndexed { k, (st, d) ->
+                    val c = sp.first to sp.second + k
+                    if (!st.fromHand && cellOf(d) == c) null else rectOf(c.first, c.second)
+                }
             }
         }
         return Out(outTiles, outTargets, placed.map { it != null }, free.sortedBy { it.second }.map { it.first }, relaxedFlags.toList())

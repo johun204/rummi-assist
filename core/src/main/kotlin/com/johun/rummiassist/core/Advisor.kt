@@ -261,6 +261,21 @@ object Advisor {
         return sets.mapIndexed { i, p -> PlanSet(p.number, p.status, tiles[i], p.noRoom, p.step, p.relaxed) }
     }
 
+    /** 계획의 판 쪽 위치를 f 로 옮긴 같은 계획(게임이 판을 줄였을 때). 손패 타일 위치는 그대로. */
+    fun remap(a: Advice, rec: Recognizer.Result, f: (Rect) -> Rect): Advice {
+        val map = java.util.IdentityHashMap<PlanTile, PlanTile>()
+        fun scr(d: DetectedTile?) = d?.let { if (it.inHand) it else it.copy(rect = f(it.rect), glyph = f(it.glyph)) }
+        for (st in a.steps) for (s in st.sets) for (pt in s.tiles)
+            map[pt] = PlanTile(pt.tile, scr(pt.screen), pt.target?.let(f)).also { it.via = pt.via?.let(f) }
+        for (st in a.steps) for (m in st.moves) if (m.isPark)
+            map[m] = PlanTile(m.tile, scr(m.screen), m.target?.let(f), parkFor = map[m.parkFor])
+        val steps = a.steps.map { st ->
+            Step(st.number, st.sets.map { s -> PlanSet(s.number, s.status, s.tiles.map { map[it]!! }, s.noRoom, s.step, s.relaxed) },
+                st.valid, st.moves.map { map[it]!! })
+        }
+        return Advice(rec, steps.flatMap { it.sets }, a.keptSets, a.handPlayed, a.handValue, a.message, a.warnings, a.jokerHint, steps)
+    }
+
     /** 원래 판 세트 번호를 공유하는 것끼리 묶은 연결 요소(세트 번호 목록들) */
     private fun components(origSetsOf: List<Set<Int>>): List<List<Int>> {
         val parent = IntArray(origSetsOf.size) { it }
@@ -303,7 +318,44 @@ object Advisor {
             return ps
         }
         fun movesOf(c: Collection<Int>) = c.flatMap { i -> sets[i].tiles.filter { it.target != null } }
-        fun badness(applied: Set<PlanTile>) = BoardCheck.badness(positions(applied), tw, th)
+        /**
+         * 판의 '무효 타일 수'를 화면 좌표가 아니라 논리 위치로 센다(게임이 판을 줄여 다시 배치해도 그대로).
+         * 원래 판 세트마다 한 줄(그 세트 안 순번), 판 타일이 남는 계획 세트는 그 원래 세트 줄에 이어 붙고,
+         * 남는 타일이 없는 계획 세트는 자기 줄. 잠시 내려놓은 타일은 혼자. 각 줄에서 이어진 묶음이 무효면 그 장수만큼.
+         */
+        val origIndex = HashMap<DetectedTile, Pair<Int, Int>>()
+        orig.forEachIndexed { o, set -> set.sortedBy { it.rect.cx }.forEachIndexed { i, t -> origIndex[t] = o to i } }
+        val axisOf = sets.map { st ->
+            val stay = st.tiles.withIndex().firstOrNull { (_, pt) -> pt.target == null && !pt.tile.fromHand && pt.screen in origIndex }
+            if (stay == null) null else origIndex[stay.value.screen]!!.let { (o, i) -> o to (i - stay.index) }
+        }
+        val movingBoardTiles = sets.flatMap { st -> st.tiles.filter { !it.tile.fromHand && it.target != null } }
+        fun logicalBadness(applied: Set<PlanTile>, parkedNow: Set<PlanTile>): Int {
+            val axes = HashMap<String, MutableList<Pair<Int, TileKind>>>()
+            val gone = movingBoardTiles.filter { it in applied || it in parkedNow }.mapNotNull { it.screen }.toHashSet()
+            orig.forEachIndexed { o, set ->
+                set.sortedBy { it.rect.cx }.forEachIndexed { i, t -> if (t !in gone) axes.getOrPut("O$o") { ArrayList() } += i to t.kind }
+            }
+            sets.forEachIndexed { si, st ->
+                val ax = axisOf[si]
+                st.tiles.forEachIndexed { k, pt ->
+                    if (pt.target == null || pt !in applied) return@forEachIndexed
+                    if (ax != null) axes.getOrPut("O${ax.first}") { ArrayList() } += (ax.second + k) to pt.tile.kind
+                    else axes.getOrPut("S$si") { ArrayList() } += k to pt.tile.kind
+                }
+            }
+            var bad = parkedNow.size
+            for (list in axes.values) {
+                val sorted = list.sortedBy { it.first }
+                var run = ArrayList<TileKind>(); var prev = Int.MIN_VALUE
+                fun flush() { if (run.isNotEmpty() && !Solver.isValidSet(run)) bad += run.size; run = ArrayList() }
+                for ((pos, k) in sorted) { if (pos != prev + 1) flush(); run += k; prev = pos }
+                flush()
+            }
+            return bad
+        }
+        // 논리 위치(자동 축소 세트 포함) + 화면 위치(겹침, 이웃 세트와 붙음 — 자동 축소 세트 제외) 둘 다 0 이어야 유효
+        fun badness(applied: Set<PlanTile>) = logicalBadness(applied, parked) + BoardCheck.badness(positions(applied), tw, th)
         fun hand(c: List<Int>) = c.sumOf { i -> sets[i].tiles.count { it.tile.fromHand } }
         fun moves(c: List<Int>) = movesOf(c).size.coerceAtLeast(1)
         val order = ArrayList<Pair<List<Int>, Boolean>>()

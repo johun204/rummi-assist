@@ -95,4 +95,30 @@ class RegressionTest {
         assertTrue(b12.tiles.filter { !it.tile.fromHand }.all { it.target == null })
         assertEquals(null, layoutProblem(a))
     }
+
+    /** 2026-11-07 제보: 한 장 옮기자 게임이 판을 줄였고, 앱이 새 계획을 세워 엉뚱한 곳으로 안내 → 같은 계획을 새 좌표로 이어 가야 한다 */
+    @Test fun planSurvivesRescale() {
+        val r = screen2()
+        val a = Advisor.advise(r, true, false)
+        // 1단계 첫 이동(B1 을 B3 왼쪽에)을 한 뒤 게임이 판을 0.85배로 줄이고 오른쪽 아래로 옮긴 화면
+        val first = a.moves.first()
+        val s = 0.85; val tx = 120.0; val ty = 40.0
+        fun f(rc: Rect): Rect {
+            val cx = s * rc.cx + tx; val cy = s * rc.cy + ty
+            val hw = rc.width * s / 2; val hh = rc.height * s / 2
+            return Rect((cx - hw).toInt(), (cy - hh).toInt(), (cx + hw).toInt(), (cy + hh).toInt())
+        }
+        val board = r.board.map { it.copy(rect = f(it.rect), glyph = f(it.glyph)) } +
+            DetectedTile(first.tile.kind, f(first.target!!), f(first.target!!), false, 0.0)
+        val hand = r.hand.filter { it !== first.screen }
+        val r2 = Recognizer.Result(board + hand, emptyList(), 930, 1972, 1248)
+        val b = com.johun.rummiassist.core.Tracker.follow(a, r2)
+        assertTrue("변환을 못 찾음", b != null && b !== a)
+        val prog = com.johun.rummiassist.core.Tracker.track(b!!, r2)
+        println("rescale: done=${prog.done.size} deviated=${prog.deviated}")
+        assertTrue(!prog.deviated)
+        assertEquals(1, prog.done.size)
+        // 다음 이동은 원래 계획의 두 번째 이동(새 좌표)
+        assertEquals(a.moves[1].tile, b.moves.first { it !in prog.done }.tile)
+    }
 }

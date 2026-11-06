@@ -461,9 +461,15 @@ class AssistService : AccessibilityService() {
         val f = shown ?: return
         var advice = plan
         var prog: Tracker.Progress? = null
-        if (advice != null && Tracker.sameTotals(advice.recognized, f.rec) && sameTileSize(advice.recognized, f.rec)) {
-            prog = Tracker.track(advice, f.rec)
-            if (prog.deviated) { advice = null; prog = null } // 계획과 다르게 옮김 → 지금 판에서 다시
+        if (advice != null && Tracker.sameTotals(advice.recognized, f.rec)) {
+            // 게임이 판을 줄이거나 옮겼으면(자동 축소) 같은 계획을 새 좌표로 옮겨 이어 간다
+            val followed = Tracker.follow(advice, f.rec)
+            if (followed == null) advice = null
+            else {
+                prog = Tracker.track(followed, f.rec)
+                if (prog.deviated) { advice = null; prog = null } // 계획과 다르게 옮김 → 지금 판에서 다시
+                else if (followed !== advice) { advice = followed; plan = followed }
+            }
         } else advice = null
         if (advice == null) {
             advice = try {
@@ -493,12 +499,6 @@ class AssistService : AccessibilityService() {
     private fun showStatus(msg: String) {
         if (!live) return toast(msg)
         showPanel(null, msg)
-    }
-
-    private fun sameTileSize(a: Recognizer.Result, b: Recognizer.Result): Boolean {
-        val wa = a.board.firstOrNull()?.rect?.width ?: return true
-        val wb = b.board.firstOrNull()?.rect?.width ?: return true
-        return kotlin.math.abs(wa - wb) <= wa * 0.1 // 판 타일이 줄어들면(게임이 재배치) 자리 계산을 다시
     }
 
     private fun showPanel(advice: Advisor.Advice?, status: String?, shownFocus: Int? = null, prog: Tracker.Progress? = null) {

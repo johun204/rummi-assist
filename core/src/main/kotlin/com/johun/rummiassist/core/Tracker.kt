@@ -2,6 +2,7 @@ package com.johun.rummiassist.core
 
 import kotlin.math.abs
 import kotlin.math.hypot
+import kotlin.math.roundToInt
 
 /**
  * 한 턴 동안 계획을 고정해 두고 진행 상황만 따라간다.
@@ -12,6 +13,36 @@ object Tracker {
     /** done: 목적지에 놓인 계획 타일, source: 아직 안 옮긴 타일의 지금 화면 위치, deviated: 계획과 다르게 움직임 */
     class Progress(val done: Set<Advisor.PlanTile>, val source: Map<Advisor.PlanTile, DetectedTile>, val deviated: Boolean) {
         fun stepDone(step: Advisor.Step) = step.moves.all { it in done }
+    }
+
+    /**
+     * 게임이 판을 줄이거나 옮기면(자동 축소) 판 타일 위치가 한꺼번에 바뀐다. 옮기지 않은 판 타일끼리 맞춰
+     * 배율 s 와 이동 (tx, ty) 를 찾고(새 위치 = s x 옛 위치 + t), 계획의 판 쪽 위치(목적지, 판 타일 출발점, 임시 칸)를
+     * 새 좌표로 옮긴 계획을 돌려준다. 거의 그대로면 원래 계획, 맞는 타일이 너무 적으면 null(다시 계산).
+     */
+    fun follow(advice: Advisor.Advice, rec: Recognizer.Result): Advisor.Advice? {
+        val old = advice.recognized.board
+        val now = rec.board
+        if (old.isEmpty() || now.isEmpty()) return advice
+        fun med(l: List<Int>) = l.sorted()[l.size / 2].toDouble()
+        val sc = med(now.map { it.rect.width }) / med(old.map { it.rect.width })
+        val w = med(now.map { it.rect.width })
+        val bin = w * 0.3
+        val votes = HashMap<Pair<Int, Int>, MutableList<Pair<Double, Double>>>()
+        for (o in old) for (n in now) if (o.kind == n.kind) {
+            val tx = n.rect.cx - sc * o.rect.cx; val ty = n.rect.cy - sc * o.rect.cy
+            votes.getOrPut((tx / bin).roundToInt() to (ty / bin).roundToInt()) { ArrayList() } += tx to ty
+        }
+        val best = votes.maxByOrNull { it.value.size }?.value ?: return null
+        // 옮기지 않은 판 타일 대부분이 같은 변환으로 맞아야 믿는다
+        if (best.size < maxOf(4, (minOf(old.size, now.size) * 0.4).roundToInt())) return null
+        val tx = best.sumOf { it.first } / best.size; val ty = best.sumOf { it.second } / best.size
+        if (abs(sc - 1) < 0.02 && abs(tx) < w * 0.15 && abs(ty) < w * 0.15) return advice
+        return Advisor.remap(advice, rec) { r ->
+            val cx = sc * r.cx + tx; val cy = sc * r.cy + ty
+            val hw = r.width * sc / 2; val hh = r.height * sc / 2
+            Rect((cx - hw).roundToInt(), (cy - hh).roundToInt(), (cx + hw).roundToInt(), (cy + hh).roundToInt())
+        }
     }
 
     /** 판+손패의 타일 구성이 같은가(타일을 뽑거나 상대가 내면 달라진다) */
