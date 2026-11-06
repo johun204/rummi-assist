@@ -41,6 +41,9 @@ fun roundRect(fill: Int, radius: Float, stroke: Int = 0, strokeW: Float = 0f, da
 class HighlightView(context: Context) : View(context) {
     private var advice: Advisor.Advice? = null
     private var labels = false
+    /** 인식 좌표(게임 창 기준) → 화면 좌표 */
+    private var winX = 0
+    private var winY = 0
     private val d = resources.displayMetrics.density
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 4 * d }
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -50,14 +53,14 @@ class HighlightView(context: Context) : View(context) {
     private val dash = DashPathEffect(floatArrayOf(10 * d, 6 * d), 0f)
     private val loc = IntArray(2)
 
-    fun setAdvice(a: Advisor.Advice, showLabels: Boolean) {
-        advice = a; labels = showLabels; invalidate()
+    fun setAdvice(a: Advisor.Advice?, showLabels: Boolean, windowX: Int = 0, windowY: Int = 0) {
+        advice = a; labels = showLabels; winX = windowX; winY = windowY; invalidate()
     }
 
     override fun onDraw(c: Canvas) {
         val a = advice ?: return
         getLocationOnScreen(loc)
-        val ox = loc[0].toFloat(); val oy = loc[1].toFloat()
+        val ox = (loc[0] - winX).toFloat(); val oy = (loc[1] - winY).toFloat()
         if (labels) {
             text.textSize = 12 * d
             for (t in a.recognized.tiles) {
@@ -111,10 +114,11 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
         root = null
     }
 
+    /** a 가 null 이면 제안 없이 status 문구만(화면이 바뀌는 중 등). */
     fun show(
-        a: Advisor.Advice, meldDone: Boolean, labels: Boolean,
-        onMeldToggle: (Boolean) -> Unit, onLabelsToggle: (Boolean) -> Unit,
-        onRefresh: () -> Unit, onClose: () -> Unit,
+        a: Advisor.Advice?, status: String?, meldDone: Boolean, labels: Boolean, useJoker: Boolean,
+        onMeldToggle: (Boolean) -> Unit, onLabelsToggle: (Boolean) -> Unit, onJokerToggle: (Boolean) -> Unit,
+        onClose: () -> Unit,
     ) {
         val r = root ?: LinearLayout(ctx).also {
             it.orientation = LinearLayout.VERTICAL
@@ -127,7 +131,7 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
 
         // 머리: 제목(끌기) + 닫기
         val header = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        header.addView(label("루미 도우미  ⠿", 13f, 0xFF9FB8E8.toInt()), LinearLayout.LayoutParams(0, -2, 1f))
+        header.addView(label("루미 도우미 · 실시간  ⠿", 13f, 0xFF9FB8E8.toInt()), LinearLayout.LayoutParams(0, -2, 1f))
         header.addView(label("✕", 18f, 0xFFFFFFFF.toInt()).apply {
             setPadding((10 * d).toInt(), 0, (4 * d).toInt(), 0)
             setOnClickListener { onClose() }
@@ -135,30 +139,31 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
         makeDraggable(header, r)
         r.addView(header)
 
-        r.addView(label(a.message, 16f, 0xFFFFFFFF.toInt(), bold = true))
-        r.addView(label(
-            "인식: 판 ${a.recognized.board.size}장 · 손패 ${a.recognized.hand.size}장" +
-                (if (a.keptSets > 0 && a.sets.isNotEmpty()) " · 그대로 둘 세트 ${a.keptSets}개" else ""),
-            12f, 0xFFB0C4E8.toInt(),
-        ))
-        for (w in a.warnings) r.addView(label("⚠ $w", 12f, 0xFFFF8A80.toInt()))
-
-        if (a.sets.isNotEmpty()) {
-            val list = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-            for (s in a.sets) list.addView(setRow(s))
-            val scroll = MaxHeightScroll(ctx, (ctx.resources.displayMetrics.heightPixels * 0.55f).toInt())
-            scroll.addView(list)
-            r.addView(scroll)
-            r.addView(label("실선 = 손패에서 낼 타일 · 점선 = 판에서 옮길 타일", 11f, 0xFF9FB8E8.toInt()))
+        if (a == null) {
+            r.addView(label(status ?: "", 15f, 0xFFFFFFFF.toInt(), bold = true))
+        } else {
+            r.addView(label(a.message, 16f, 0xFFFFFFFF.toInt(), bold = true))
+            a.jokerHint?.let { r.addView(label("☺ $it", 12f, 0xFFFFEB3B.toInt())) }
+            r.addView(label(
+                "인식: 판 ${a.recognized.board.size}장 · 손패 ${a.recognized.hand.size}장" +
+                    (if (a.keptSets > 0 && a.sets.isNotEmpty()) " · 그대로 둘 세트 ${a.keptSets}개" else ""),
+                12f, 0xFFB0C4E8.toInt(),
+            ))
+            for (w in a.warnings) r.addView(label("⚠ $w", 12f, 0xFFFF8A80.toInt()))
+            if (a.sets.isNotEmpty()) {
+                val list = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+                for (s in a.sets) list.addView(setRow(s))
+                val scroll = MaxHeightScroll(ctx, (ctx.resources.displayMetrics.heightPixels * 0.55f).toInt())
+                scroll.addView(list)
+                r.addView(scroll)
+                r.addView(label("실선 = 손패에서 낼 타일 · 점선 = 판에서 옮길 타일", 11f, 0xFF9FB8E8.toInt()))
+            }
         }
 
         val opts = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         opts.addView(check("첫 등록 완료", meldDone, onMeldToggle))
+        opts.addView(check("조커 사용", useJoker, onJokerToggle))
         opts.addView(check("인식 표시", labels, onLabelsToggle))
-        opts.addView(label("↻", 20f, 0xFFFFFFFF.toInt()).apply {
-            setPadding((12 * d).toInt(), 0, (4 * d).toInt(), 0)
-            setOnClickListener { onRefresh() }
-        })
         r.addView(opts)
     }
 

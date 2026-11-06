@@ -17,9 +17,15 @@ object Advisor {
         val handValue: Int,
         val message: String,
         val warnings: List<String>,
+        /** 조커를 안 쓰기로 했을 때, 썼다면 얼마나 더 낼 수 있는지 */
+        val jokerHint: String? = null,
     )
 
-    fun advise(rec: Recognizer.Result, initialMeldDone: Boolean): Advice {
+    /**
+     * @param useHandJokers false 면 손패 조커는 없는 것으로 계산(판 위 조커는 규칙상 계속 써야 함)
+     * 제안은 화면에 실제로 있는 판 타일 + 손패만으로 만든다. 인식이 앞뒤가 안 맞으면(같은 타일 3장 등) 아무것도 제안하지 않는다.
+     */
+    fun advise(rec: Recognizer.Result, initialMeldDone: Boolean, useHandJokers: Boolean = true): Advice {
         val warnings = ArrayList<String>()
         val boardTiles = rec.board
         val handTiles = rec.hand
@@ -27,32 +33,49 @@ object Advisor {
         for (t in rec.tiles) all[t.kind] = (all[t.kind] ?: 0) + 1
         for ((k, n) in all) if (!k.isJoker && n > 2) warnings += "$k 가 ${n}장으로 인식됨(최대 2장)"
         if ((all[TileKind.JOKER] ?: 0) > 2) warnings += "조커가 3장 이상으로 인식됨"
-
         val origSets = rec.boardSets
+        if (warnings.isNotEmpty())
+            return Advice(rec, emptyList(), origSets.size, 0, 0, "인식이 불안정해요 — 화면을 그대로 두세요", warnings)
+
         val validOrig = origSets.filter { s -> Solver.isValidSet(s.map { it.kind }) }
         for (s in origSets - validOrig.toSet()) warnings += "판 세트 인식 이상: ${s.joinToString(" ") { it.kind.toString() }}"
 
-        fun result(sol: Solution?, msg: String): Advice {
-            if (sol == null || sol.handTiles == 0) return Advice(rec, emptyList(), origSets.size, 0, 0, msg, warnings)
-            return present(rec, origSets, sol, msg, warnings)
+        fun result(sol: Solution?, msg: String, hint: String? = null): Advice {
+            if (sol == null || sol.handTiles == 0) return Advice(rec, emptyList(), origSets.size, 0, 0, msg, warnings, hint)
+            val a = present(rec, origSets, sol, msg, warnings, hint)
+            // 화면에 없는 타일이 하나라도 들어간 제안은 보여 주지 않는다.
+            if (a.sets.any { s -> s.tiles.any { it.screen == null } })
+                return Advice(rec, emptyList(), origSets.size, 0, 0, "인식이 불안정해요 — 화면을 그대로 두세요", warnings)
+            return a
         }
 
-        val (hc, hj) = counts(handTiles)
+        val (hc, hjAll) = counts(handTiles)
+        val hj = if (useHandJokers) hjAll else 0
         if (!initialMeldDone) {
             // 첫 등록: 손패만으로 30점 이상. 먼저 장수 최대, 부족하면 점수 최대.
-            val empty = Solver.emptyCounts()
-            var sol = Solver.solve(empty, hc, 0, hj, wCount = 1000, wValue = 1, jokerValue = true)
-            if (sol != null && sol.handValue < 30) sol = Solver.solve(empty, hc, 0, hj, wCount = 1, wValue = 1000, jokerValue = true)
-            if (sol == null || sol.handValue < 30)
-                return result(null, "첫 등록(30점) 불가 — 타일을 뽑으세요" + (sol?.let { " (최대 ${it.handValue}점)" } ?: ""))
-            return result(sol, "첫 등록: 손패 ${sol.handTiles}장, ${sol.handValue}점")
+            fun meld(jokers: Int): Solution? {
+                val empty = Solver.emptyCounts()
+                var sol = Solver.solve(empty, hc, 0, jokers, wCount = 1000, wValue = 1, jokerValue = true)
+                if (sol != null && sol.handValue < 30) sol = Solver.solve(empty, hc, 0, jokers, wCount = 1, wValue = 1000, jokerValue = true)
+                return sol?.takeIf { it.handValue >= 30 }
+            }
+            val sol = meld(hj)
+            val hint = if (hj < hjAll) meld(hjAll)?.let { j ->
+                if (sol == null) "조커를 쓰면 첫 등록 가능 (${j.handTiles}장, ${j.handValue}점)"
+                else if (j.handTiles > sol.handTiles) "조커를 쓰면 ${j.handTiles - sol.handTiles}장 더 낼 수 있어요" else null
+            } else null
+            if (sol == null) return result(null, "첫 등록(30점) 불가 — 타일을 뽑으세요", hint)
+            return result(sol, "첫 등록: 손패 ${sol.handTiles}장, ${sol.handValue}점", hint)
         }
 
         val (bc, bj) = counts(boardTiles)
         val sol = Solver.solve(bc, hc, bj, hj)
             ?: return result(null, "판을 유효한 세트로 해석할 수 없어요(인식 오류 가능)")
-        if (sol.handTiles == 0) return result(null, "낼 수 있는 조합이 없어요 — 타일을 뽑으세요")
-        return result(preserve(sol, validOrig), "손패 ${sol.handTiles}장 내기 (합 ${sol.handValue})")
+        val hint = if (hj < hjAll) Solver.solve(bc, hc, bj, hjAll)?.let { j ->
+            if (j.handTiles > sol.handTiles) "조커를 쓰면 ${j.handTiles - sol.handTiles}장 더 낼 수 있어요" else null
+        } else null
+        if (sol.handTiles == 0) return result(null, "낼 수 있는 조합이 없어요 — 타일을 뽑으세요", hint)
+        return result(preserve(sol, validOrig), "손패 ${sol.handTiles}장 내기 (합 ${sol.handValue})", hint)
     }
 
     /** 같은 손패 사용량을 유지하면서 원래 판 세트를 최대한 그대로 남기도록 다시 나눈다. */
@@ -97,7 +120,7 @@ object Advisor {
     }
 
     private fun present(
-        rec: Recognizer.Result, orig: List<List<DetectedTile>>, sol: Solution, msg: String, warnings: List<String>,
+        rec: Recognizer.Result, orig: List<List<DetectedTile>>, sol: Solution, msg: String, warnings: List<String>, hint: String?,
     ): Advice {
         val origOf = HashMap<DetectedTile, Int>()
         orig.forEachIndexed { i, s -> s.forEach { origOf[it] = i } }
@@ -128,7 +151,7 @@ object Advisor {
         // 화면 표시 순서: 붙이기 → 새 세트 → 재배치
         val ordered = out.sortedBy { it.status.ordinal.let { o -> if (o == 1) -1 else o } }
             .mapIndexed { i, p -> PlanSet(i + 1, p.status, p.tiles) }
-        return Advice(rec, ordered, kept, sol.handTiles, sol.handValue, msg, warnings)
+        return Advice(rec, ordered, kept, sol.handTiles, sol.handValue, msg, warnings, hint)
     }
 
     private fun overlap(a: List<TileKind>, b: List<TileKind>): Int {
