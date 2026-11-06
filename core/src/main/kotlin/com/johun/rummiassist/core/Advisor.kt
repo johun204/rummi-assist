@@ -197,8 +197,10 @@ object Advisor {
             }
             PlanSet(0, status, plan, noRoom = !placed.placed[i])
         }
-        val steps = makeSteps(rec, orig, normalizeSwaps(rec, out), oneStep = !canMoveBoard)
-        return Advice(rec, steps.flatMap { it.sets }, keptAnchors.size, sol.handTiles, sol.handValue, msg, warnings, hint, steps)
+        // 자리를 다시 잡느라 함께 넘겼지만 결국 제자리인 기존 세트는 목록에서 빼고 '그대로 둘 세트'로 센다
+        val (stillKept, changed) = normalizeSwaps(rec, out).partition { p -> p.tiles.none { it.tile.fromHand } && p.tiles.all { it.target == null } && !p.noRoom }
+        val steps = makeSteps(rec, orig, changed, oneStep = !canMoveBoard)
+        return Advice(rec, steps.flatMap { it.sets }, keptAnchors.size + stillKept.size, sol.handTiles, sol.handValue, msg, warnings, hint, steps)
     }
 
     /**
@@ -288,6 +290,20 @@ object Advisor {
             done += merged
             order += merged to valid(done)
             comps = comps.filter { c -> chosen.none { it === c } }.toMutableList()
+        }
+        // 규칙: 한 턴에 손패를 한 장 이상 내야 판 변경이 인정된다 → 손패를 안 내는 단계(기존 타일 정리만)는
+        // 혼자 끝낼 수 있는 단계가 아니므로 다음 단계에 합친다(마지막이면 앞 단계에).
+        var k = 0
+        while (k < order.size) {
+            val (idx, _) = order[k]
+            if (hand(idx) == 0 && order.size > 1) {
+                val into = if (k + 1 < order.size) k + 1 else k - 1
+                val merged = (order[into].first + idx)
+                order[into] = merged to order[maxOf(into, k)].second
+                order.removeAt(k)
+                if (into > k) continue else { k = 0; continue }
+            }
+            k++
         }
         val rest = blocked.flatten()
         if (rest.isNotEmpty()) order += rest to false

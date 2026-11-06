@@ -183,11 +183,23 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
     private val d = ctx.resources.displayMetrics.density
     private val prefs = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
     private var root: LinearLayout? = null
+    private var lastKey: String? = null
     private val lp = AssistService.overlayParams(
         (300 * d).toInt(), WindowManager.LayoutParams.WRAP_CONTENT, touchable = true,
     ).apply {
         x = prefs.getInt("px", (70 * d).toInt())
         y = prefs.getInt("py", (8 * d).toInt())
+    }
+
+    /** 패널이 화면 밖으로 나가지 않게(일부라도 벗어나면 안쪽으로 당긴다) */
+    fun clamp() {
+        val r = root ?: return
+        val b = wm.currentWindowMetrics.bounds
+        if (r.width == 0) return
+        val nx = lp.x.coerceIn(0, maxOf(0, b.width() - r.width))
+        val ny = lp.y.coerceIn(0, maxOf(0, b.height() - r.height))
+        if (nx != lp.x || ny != lp.y) { lp.x = nx; lp.y = ny }
+        wm.updateViewLayout(r, lp)
     }
 
     fun setVisible(v: Boolean) { root?.visibility = if (v) View.VISIBLE else View.INVISIBLE }
@@ -201,6 +213,7 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
     fun remove() {
         root?.let { wm.removeView(it) }
         root = null
+        lastKey = null
     }
 
     /** a 가 null 이면 제안 없이 status 문구만(화면이 바뀌는 중 등). */
@@ -216,12 +229,21 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
             it.setPadding((10 * d).toInt(), (6 * d).toInt(), (10 * d).toInt(), (8 * d).toInt())
             wm.addView(it, lp)
             root = it
+            // 내용이 바뀌어 크기가 달라질 때마다 화면 안으로
+            it.addOnLayoutChangeListener { _, l, t, rr, b, ol, ot, orr, ob -> if (rr - l != orr - ol || b - t != ob - ot) it.post { clamp() } }
         }
+        // 내용이 같으면 다시 만들지 않는다(실시간 갱신 중에 누른 터치가 사라지지 않게)
+        val key = listOf(
+            System.identityHashCode(a), status, meldDone, labels, useJoker, focus, progress?.done?.size,
+            prefs.getBoolean("panelMin", true),
+        ).joinToString("|")
+        if (key == lastKey && r.childCount > 0) return
+        lastKey = key
         r.removeAllViews()
-        val again = { show(a, status, meldDone, labels, useJoker, onMeldToggle, onLabelsToggle, onJokerToggle, onClose, focus, onFocus, progress) }
+        val again = { lastKey = null; show(a, status, meldDone, labels, useJoker, onMeldToggle, onLabelsToggle, onJokerToggle, onClose, focus, onFocus, progress) }
 
         // 최소화: 한 줄(지금 단계 · 남은 이동 · 다음 이동)만. 누르면 펼침.
-        val minimized = prefs.getBoolean("panelMin", false)
+        val minimized = prefs.getBoolean("panelMin", true)
         val wantW = if (minimized) WindowManager.LayoutParams.WRAP_CONTENT else (300 * d).toInt()
         if (lp.width != wantW) { lp.width = wantW; wm.updateViewLayout(r, lp) }
         fun toggleMin() { prefs.edit().putBoolean("panelMin", !minimized).apply(); again() }
@@ -229,8 +251,9 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
         // 머리: 제목(끌기) + 최소화 + 닫기
         val header = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         if (minimized) {
+            // 요약 줄: 누르면 펼침, 끌면 이동
             header.addView(label(summary(a, status, progress), 13f, 0xFFFFFFFF.toInt(), bold = true).apply {
-                setOnClickListener { toggleMin() }
+                makeDraggable(this) { toggleMin() }
             })
         } else {
             header.addView(label("루미 도우미 · 실시간  ⠿", 13f, 0xFF9FB8E8.toInt()), LinearLayout.LayoutParams(0, -2, 1f))
@@ -243,7 +266,7 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
             setPadding((10 * d).toInt(), 0, (4 * d).toInt(), 0)
             setOnClickListener { onClose() }
         })
-        makeDraggable(header, r)
+        makeDraggable(header)
         r.addView(header)
         if (minimized) return
 
@@ -375,16 +398,20 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
     }
 
     @SuppressLint("ClickableViewAccessibility")
-    private fun makeDraggable(handle: View, win: View) {
-        var dx = 0f; var dy = 0f; var sx = 0; var sy = 0
+    /** 끌면 패널 이동, 거의 안 움직이고 떼면 onTap */
+    private fun makeDraggable(handle: View, onTap: (() -> Unit)? = null) {
+        var dx = 0f; var dy = 0f; var sx = 0; var sy = 0; var moved = false
+        val slop = android.view.ViewConfiguration.get(ctx).scaledTouchSlop
         handle.setOnTouchListener { _, e ->
             when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> { dx = e.rawX; dy = e.rawY; sx = lp.x; sy = lp.y }
+                MotionEvent.ACTION_DOWN -> { dx = e.rawX; dy = e.rawY; sx = lp.x; sy = lp.y; moved = false }
                 MotionEvent.ACTION_MOVE -> {
-                    lp.x = sx + (e.rawX - dx).toInt(); lp.y = sy + (e.rawY - dy).toInt()
-                    wm.updateViewLayout(win, lp)
+                    if (kotlin.math.abs(e.rawX - dx) > slop || kotlin.math.abs(e.rawY - dy) > slop) moved = true
+                    if (moved) { lp.x = sx + (e.rawX - dx).toInt(); lp.y = sy + (e.rawY - dy).toInt(); clamp() }
                 }
-                MotionEvent.ACTION_UP -> prefs.edit().putInt("px", lp.x).putInt("py", lp.y).apply()
+                MotionEvent.ACTION_UP -> {
+                    if (moved) prefs.edit().putInt("px", lp.x).putInt("py", lp.y).apply() else onTap?.invoke()
+                }
             }
             true
         }

@@ -22,8 +22,8 @@ internal object Placement {
     class Out(val tiles: List<List<Pair<SetTile, DetectedTile>>>, val targets: List<List<Rect?>>, val placed: List<Boolean>)
 
     /**
-     * repack = true: 모든 세트(그대로 둘 세트 포함)를 긴 것부터 빈 판에 차곡차곡 다시 놓는다.
-     * 판이 조각나 자리가 모자랄 때 쓰는 대안(움직이는 타일은 늘지만 완성된 판이 반드시 유효).
+     * repack = true: 그대로 둘 세트도 '움직일 수 있는' 것으로 넘겨받는다. 다만 제자리에 둘 수 있으면 그대로 두고,
+     * 새 세트가 들어갈 자리를 막는 세트만 옮긴다(판이 조각나 자리가 모자랄 때의 대안).
      */
     /**
      * 자리를 못 찾은 세트는 실행할 수 없고, 같은 원래 판 세트를 나눠 쓰는 세트들(linked)도 함께 실행할 수 없다.
@@ -105,7 +105,7 @@ internal object Placement {
             return Rect(cx - tileW / 2, r.y - tileH / 2, cx - tileW / 2 + tileW, r.y - tileH / 2 + tileH)
         }
 
-        val occ = HashMap<Row, HashMap<Int, Int>>()    // 최종 배치: 칸 → 주인
+        val occ = HashMap<Row, HashMap<Int, Int>>()    // 최종 배치: 칸 → 주인 (attempt 마다 baseOcc 로 초기화)
         val now = HashMap<Row, HashSet<Int>>()          // 지금 타일이 있는 칸
         for (t in board) cellOf(t)?.let { (r, c) -> now.getOrPut(r) { HashSet() } += c }
         // 이번 수에 쓰이지 않는 판 타일(그대로 둘 세트, 첫 등록 때의 판 전체)은 제자리를 차지한다.
@@ -123,39 +123,83 @@ internal object Placement {
             return true
         }
 
-        val outTiles = ArrayList<List<Pair<SetTile, DetectedTile>>>()
-        val outTargets = ArrayList<List<Rect?>>()
-        // 남는 판 타일이 많은 세트부터 제자리 배치를 시도
-        val order = if (repack) sets.indices.sortedByDescending { sets[it].tiles.size }
-        else sets.indices.sortedByDescending { i -> sets[i].tiles.count { (st, d) -> !st.fromHand && sets[i].anchor != null && d in orig[sets[i].anchor!!] } }
-        val placed = arrayOfNulls<Pair<Row, Int>>(sets.size)
-        val finalTiles = arrayOfNulls<List<Pair<SetTile, DetectedTile>>>(sets.size)
-        for (i in order) {
-            if (i in stuck) continue
-            val s = sets[i]
-            val stayCand = { d: DetectedTile, st: SetTile -> !st.fromHand && s.anchor != null && d in orig[s.anchor] }
-            var tiles = s.tiles
-            // 그룹은 순서가 자유: 남는 타일을 지금 순서대로 앞에, 새 타일을 뒤에
-            if (isGroup(tiles.map { it.first })) {
-                val (stay, rest) = tiles.partition { (st, d) -> stayCand(d, st) }
-                tiles = stay.sortedBy { it.second.rect.cx } + rest
-            }
-            finalTiles[i] = tiles
-            // 제자리: 남는 타일들이 가장 많이 동의하는 (줄, 시작 칸)
-            val votes = HashMap<Pair<Row, Int>, Int>()
-            tiles.forEachIndexed { idx, (st, d) ->
-                if (stayCand(d, st)) cellOf(d)?.let { (r, c) -> votes.merge(r to c - idx, 1, Int::plus) }
-            }
-            val inPlace = votes.entries.sortedByDescending { it.value }.map { it.key }
-                .firstOrNull { (r, c0) -> fits(r, c0, tiles.size, i, avoidNow = false) }
-            val spot = (if (repack) null else inPlace)
-                ?: rows.firstNotNullOfOrNull { r -> colRange(r).firstOrNull { fits(r, it, tiles.size, i, true) }?.let { r to it } }
-                ?: rows.firstNotNullOfOrNull { r -> colRange(r).firstOrNull { fits(r, it, tiles.size, i, false) }?.let { r to it } }
-            if (spot != null) {
-                placed[i] = spot
-                for (k in tiles.indices) occ.getOrPut(spot.first) { HashMap() }[spot.second + k] = i
+        val baseOcc = occ.mapValues { HashMap(it.value) }
+
+        class Attempt(val placed: Array<Pair<Row, Int>?>, val tiles: Array<List<Pair<SetTile, DetectedTile>>?>) {
+            val unplaced get() = sets.indices.count { it !in stuck && placed[it] == null }
+            val moves get() = sets.indices.sumOf { i ->
+                val sp = placed[i] ?: return@sumOf 0
+                tiles[i]!!.withIndex().count { (k, p) -> p.first.fromHand || cellOf(p.second) != (sp.first to sp.second + k) }
             }
         }
+
+        /** 주어진 순서로 세트를 하나씩 놓아 본다. */
+        fun attempt(order: List<Int>): Attempt {
+            occ.clear(); for ((r, m) in baseOcc) occ[r] = HashMap(m)
+            val placed = arrayOfNulls<Pair<Row, Int>>(sets.size)
+            val finalTiles = arrayOfNulls<List<Pair<SetTile, DetectedTile>>>(sets.size)
+            for (i in order) {
+                if (i in stuck) continue
+                val s = sets[i]
+                val stayCand = { d: DetectedTile, st: SetTile -> !st.fromHand && s.anchor != null && d in orig[s.anchor] }
+                val n = s.tiles.size
+                val group = isGroup(s.tiles.map { it.first })
+                // 제자리 후보 (줄, 시작 칸, 그 자리에서의 타일 순서, 제자리에 남는 타일 수)
+                val cands = ArrayList<Triple<Pair<Row, Int>, List<Pair<SetTile, DetectedTile>>, Int>>()
+                if (group) {
+                    // 그룹은 순서가 자유: 남는 타일 하나를 기준으로 가능한 모든 시작 칸에서, 그 범위 안의 남는 타일은 제 칸에 둔다
+                    val stays = s.tiles.filter { (st, d) -> stayCand(d, st) }
+                    val starts = HashSet<Pair<Row, Int>>()
+                    for ((_, d) in stays) cellOf(d)?.let { (r, c) -> for (k in 0 until n) starts += r to c - k }
+                    for ((r, c0) in starts) {
+                        val slot = arrayOfNulls<Pair<SetTile, DetectedTile>>(n)
+                        val rest = ArrayList<Pair<SetTile, DetectedTile>>()
+                        for (p in s.tiles) {
+                            val cell = if (stayCand(p.second, p.first)) cellOf(p.second) else null
+                            val k = if (cell != null && cell.first == r) cell.second - c0 else -1
+                            if (k in 0 until n && slot[k] == null) slot[k] = p else rest += p
+                        }
+                        val kept = slot.count { it != null }
+                        val it = rest.iterator()
+                        for (k in 0 until n) if (slot[k] == null) slot[k] = it.next()
+                        cands += Triple(r to c0, slot.map { x -> x!! }, kept)
+                    }
+                } else {
+                    val votes = HashMap<Pair<Row, Int>, Int>()
+                    s.tiles.forEachIndexed { idx, (st, d) ->
+                        if (stayCand(d, st)) cellOf(d)?.let { (r, c) -> votes.merge(r to c - idx, 1, Int::plus) }
+                    }
+                    for ((k, v) in votes) cands += Triple(k, s.tiles, v)
+                }
+                val inPlace = cands.sortedByDescending { it.third }.firstOrNull { (sp, _, _) -> fits(sp.first, sp.second, n, i, avoidNow = false) }
+                var tiles = inPlace?.second ?: s.tiles
+                val spot = inPlace?.first
+                    ?: rows.firstNotNullOfOrNull { r -> colRange(r).firstOrNull { fits(r, it, n, i, true) }?.let { r to it } }
+                    ?: rows.firstNotNullOfOrNull { r -> colRange(r).firstOrNull { fits(r, it, n, i, false) }?.let { r to it } }
+                if (inPlace == null && group) tiles = s.tiles
+                finalTiles[i] = tiles
+                if (spot != null) {
+                    placed[i] = spot
+                    for (k in 0 until n) occ.getOrPut(spot.first) { HashMap() }[spot.second + k] = i
+                }
+            }
+            return Attempt(placed, finalTiles)
+        }
+
+        // 놓는 순서에 따라 결과가 달라진다: 몇 가지 순서로 해 보고, 못 놓은 세트가 적고 → 움직임이 적은 것을 고른다.
+        fun stays(i: Int) = sets[i].tiles.count { (st, d) -> !st.fromHand && sets[i].anchor != null && d in orig[sets[i].anchor!!] }
+        val idx = sets.indices.toList()
+        val orders = listOf(
+            idx.sortedWith(compareByDescending<Int> { stays(it) }.thenByDescending { sets[it].tiles.size }),
+            idx.sortedByDescending { sets[it].tiles.size },
+            idx.sortedWith(compareByDescending<Int> { sets[it].tiles.count { p -> p.first.fromHand } }.thenByDescending { sets[it].tiles.size }),
+            idx.sortedBy { stays(it) },
+        ).distinct()
+        val best = orders.map { attempt(it) }.minWith(compareBy<Attempt> { it.unplaced }.thenBy { it.moves })
+        val placed = best.placed
+        val finalTiles = best.tiles
+        val outTiles = ArrayList<List<Pair<SetTile, DetectedTile>>>()
+        val outTargets = ArrayList<List<Rect?>>()
         for (i in sets.indices) {
             val tiles = finalTiles[i] ?: sets[i].tiles
             val spot = placed[i]
