@@ -297,6 +297,8 @@ class SyntheticTest {
                     val c1 = r.tiles.groupingBy { it.kind }.eachCount(); val c2 = r2.tiles.groupingBy { it.kind }.eachCount()
                     println("  diff: " + (c1.keys + c2.keys).filter { c1[it] != c2[it] }.joinToString { "$it ${c1[it]}→${c2[it]}" } + " hand ${r.hand.size}→${r2.hand.size} board ${r.board.size}→${r2.board.size}")
                 }
+                for (m in a.moves) if (m !in prog.done && m !in prog.source) println("   lost ${m.tile} park=${m.isPark} step=${a.steps.first { m in it.moves }.number} from=${m.screen?.rect} to=${m.target} via=${m.via}")
+                println("   step1 moves: " + moving.joinToString { "${it.tile}${if (it.isPark) "(임시)" else ""}" } + " | step1.moves: " + step.moves.joinToString { "${it.tile}${if (it.isPark) "(임시)" else ""}" })
                 println("EXEC seed=$seed invalid=${invalid.map { s -> s.map { it.kind } }} done=${prog.done.size}/${moving.size} deviated=${prog.deviated} same=$same")
                 System.getenv("SYN_SAVE")?.let { saveImg(img, "$it/exec$seed.png") }
             }

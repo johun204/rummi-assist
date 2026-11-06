@@ -19,7 +19,8 @@ internal object Placement {
     private class Row(val y: Int, val phase: Double)
 
     /** tiles: 세트별 타일(그룹은 놓을 순서로 재정렬), targets: 타일별 목적지(null = 제자리) */
-    class Out(val tiles: List<List<Pair<SetTile, DetectedTile>>>, val targets: List<List<Rect?>>, val placed: List<Boolean>)
+    /** free: 지금도 비어 있고 최종 배치에서도 비는 칸(순환을 풀 때 잠시 내려놓을 자리), 주변이 빈 칸부터 */
+    class Out(val tiles: List<List<Pair<SetTile, DetectedTile>>>, val targets: List<List<Rect?>>, val placed: List<Boolean>, val free: List<Rect> = emptyList())
 
     /**
      * repack = true: 그대로 둘 세트도 '움직일 수 있는' 것으로 넘겨받는다. 다만 제자리에 둘 수 있으면 그대로 두고,
@@ -114,19 +115,50 @@ internal object Placement {
         for ((i, s) in orig.withIndex()) for (t in s)
             if ((!repack && t !in used) || t in stuckTiles) cellOf(t)?.let { (r, c) -> occ.getOrPut(r) { HashMap() }[c] = -1 - i }
 
-        fun fits(r: Row, c0: Int, n: Int, owner: Int, avoidNow: Boolean): Boolean {
+        /**
+         * stayAt: 이 세트의 '제자리에 남는' 타일이 지금 있는 칸.
+         * strict 면 그 외의 칸은 지금 비어 있어야 한다. 아니면 지금 타일이 있어도 그 타일이 옮겨 갈 칸이면 허용
+         * (이동 순서에서 비운 다음에 놓도록 한다 — 타일 위에 덮어 놓는 일은 없다).
+         */
+        fun fits(r: Row, c0: Int, n: Int, owner: Int, stayAt: Set<Int> = emptySet(), strict: Boolean = true): Boolean {
             val range = colRange(r)
             if (c0 < range.first || c0 + n - 1 > range.last) return false
             val o = occ[r] ?: emptyMap<Int, Int>()
             for (c in c0 - 1..c0 + n) { val who = o[c]; if (who != null && who != owner) return false }
-            if (avoidNow) { val cur = now[r] ?: emptySet<Int>(); for (c in c0..c0 + n - 1) if (c in cur) return false }
+            if (strict) { val cur = now[r] ?: emptySet<Int>(); for (c in c0..c0 + n - 1) if (c in cur && c !in stayAt) return false }
             return true
         }
 
         val baseOcc = occ.mapValues { HashMap(it.value) }
 
+        // 지금 각 칸에 있는 판 타일
+        val occupant = HashMap<Pair<Row, Int>, DetectedTile>()
+        for (t in board) cellOf(t)?.let { occupant[it] = t }
+
         class Attempt(val placed: Array<Pair<Row, Int>?>, val tiles: Array<List<Pair<SetTile, DetectedTile>>?>) {
             val unplaced get() = sets.indices.count { it !in stuck && placed[it] == null }
+            /**
+             * 순환 수: 타일 A 가 놓일 칸에 지금 있는 타일 B 는 먼저 비켜야 한다(A→B 의존). 이 의존이 돌고 돌면
+             * 어느 쪽도 먼저 옮길 수 없다(덮어 놓기 없이는 불가능) → 그런 배치는 피한다.
+             */
+            val cycles: Int get() {
+                val dest = HashMap<DetectedTile, Pair<Row, Int>>() // 판 타일 → 옮겨 갈 칸
+                for (i in sets.indices) {
+                    val sp = placed[i] ?: continue
+                    tiles[i]!!.forEachIndexed { k, p -> if (!p.first.fromHand) { val c = sp.first to sp.second + k; if (cellOf(p.second) != c) dest[p.second] = c } }
+                }
+                var n = 0
+                for (start in dest.keys) {
+                    var cur: DetectedTile? = start
+                    var steps = 0
+                    while (cur != null && steps++ <= dest.size) {
+                        val next = dest[cur]?.let { occupant[it] }
+                        if (next === start) { n++; break }
+                        cur = next
+                    }
+                }
+                return n
+            }
             val moves get() = sets.indices.sumOf { i ->
                 val sp = placed[i] ?: return@sumOf 0
                 tiles[i]!!.withIndex().count { (k, p) -> p.first.fromHand || cellOf(p.second) != (sp.first to sp.second + k) }
@@ -144,6 +176,16 @@ internal object Placement {
                 val stayCand = { d: DetectedTile, st: SetTile -> !st.fromHand && s.anchor != null && d in orig[s.anchor] }
                 val n = s.tiles.size
                 val group = isGroup(s.tiles.map { it.first })
+                val stayCount = s.tiles.count { (st, d) -> stayCand(d, st) }
+                // 원래 자리 바로 옆(같은 줄, 한 칸 이내)으로 세트째 미는 자리는 빈 곳 후보에서 뺀다
+                val ownCells = s.tiles.filter { !it.first.fromHand }.mapNotNull { cellOf(it.second) }
+                fun freeSpot(n: Int, owner: Int, strict: Boolean): Pair<Row, Int>? = rows.firstNotNullOfOrNull { r ->
+                    val own = ownCells.filter { it.first == r }.map { it.second }
+                    colRange(r).firstOrNull { c0 ->
+                        (own.isEmpty() || c0 + n - 1 < own.min() - 1 || c0 > own.max() + 1 || ownCells.size < 1) &&
+                            fits(r, c0, n, owner, emptySet(), strict)
+                    }?.let { r to it }
+                }
                 // 제자리 후보 (줄, 시작 칸, 그 자리에서의 타일 순서, 제자리에 남는 타일 수)
                 val cands = ArrayList<Triple<Pair<Row, Int>, List<Pair<SetTile, DetectedTile>>, Int>>()
                 if (group) {
@@ -174,11 +216,19 @@ internal object Placement {
                 // 순서가 실행마다 달라지지 않게: 제자리 타일 수 → 줄 위치 → 칸 순으로 고정
                 val inPlace = cands.sortedWith(compareByDescending<Triple<Pair<Row, Int>, List<Pair<SetTile, DetectedTile>>, Int>> { it.third }
                     .thenBy { it.first.first.y }.thenBy { it.first.second })
-                    .firstOrNull { (sp, _, _) -> fits(sp.first, sp.second, n, i, avoidNow = false) }
+                    // 남는 타일이 '전부' 제 칸에 그대로 있을 때만 제자리 배치(일부만 남기고 나머지를 옆으로 미는 일 없음)
+                    .filter { it.third == stayCount }
+                    .let { cs ->
+                        fun ok(strict: Boolean) = cs.firstOrNull { (sp, arr, _) ->
+                            val stayAt = arr.withIndex().filter { (k, p) -> stayCand(p.second, p.first) && cellOf(p.second) == (sp.first to sp.second + k) }
+                                .map { sp.second + it.index }.toSet()
+                            fits(sp.first, sp.second, n, i, stayAt, strict)
+                        }
+                        ok(true) ?: ok(false)
+                    }
                 var tiles = inPlace?.second ?: s.tiles
                 val spot = inPlace?.first
-                    ?: rows.firstNotNullOfOrNull { r -> colRange(r).firstOrNull { fits(r, it, n, i, true) }?.let { r to it } }
-                    ?: rows.firstNotNullOfOrNull { r -> colRange(r).firstOrNull { fits(r, it, n, i, false) }?.let { r to it } }
+                    ?: freeSpot(n, i, true) ?: freeSpot(n, i, false)
                 if (inPlace == null && group) tiles = s.tiles
                 finalTiles[i] = tiles
                 if (spot != null) {
@@ -202,7 +252,7 @@ internal object Placement {
             val rnd = kotlin.random.Random(42)
             base + List(if (sets.size > 1) 24 else 0) { idx.shuffled(rnd) }
         }.distinct()
-        val best = orders.map { attempt(it) }.minWith(compareBy<Attempt> { it.unplaced }.thenBy { it.moves })
+        val best = orders.map { attempt(it) }.minWith(compareBy<Attempt> { it.unplaced }.thenBy { it.cycles }.thenBy { it.moves })
         val placed = best.placed
         val finalTiles = best.tiles
         val outTiles = ArrayList<List<Pair<SetTile, DetectedTile>>>()
@@ -217,7 +267,17 @@ internal object Placement {
                 if (!st.fromHand && cellOf(d) == (r to c)) null else rectOf(r, c)
             }
         }
-        return Out(outTiles, outTargets, placed.map { it != null })
+        // 최종 배치(best)로 occ 를 다시 채워 빈 칸 목록을 만든다
+        val finalOcc = HashMap<Row, HashSet<Int>>()
+        for ((r, m) in baseOcc) finalOcc.getOrPut(r) { HashSet() } += m.keys
+        for (i in sets.indices) { val sp = placed[i] ?: continue; for (k in 0 until (finalTiles[i] ?: sets[i].tiles).size) finalOcc.getOrPut(sp.first) { HashSet() } += sp.second + k }
+        val free = ArrayList<Pair<Rect, Int>>()
+        for (r in rows) for (c in colRange(r)) {
+            if (c in (now[r] ?: emptySet<Int>()) || c in (finalOcc[r] ?: emptySet<Int>())) continue
+            val crowd = (-1..1).count { d -> (c + d) in (now[r] ?: emptySet<Int>()) || (c + d) in (finalOcc[r] ?: emptySet<Int>()) }
+            free += rectOf(r, c) to crowd
+        }
+        return Out(outTiles, outTargets, placed.map { it != null }, free.sortedBy { it.second }.map { it.first })
     }
 
     /** 판 타일 크기. 판이 비었으면 손패 타일의 75%로 가정. */

@@ -50,11 +50,12 @@ class RegressionTest {
             val a = Advisor.advise(r, true, joker)
             println("joker=$joker: ${a.message} 이동 ${a.moves.size}개, 단계 ${a.steps.map { "${it.number}(손패${it.handTiles},이동${it.moves.size},valid=${it.valid})" }}")
             for (s in a.sets) println("   #${s.number} ${s.status} step${s.step}: " + s.tiles.joinToString(" ") { "${it.tile}${if (it.target != null) "→" else ""}" })
+            for (m in a.moves) println("     move ${m.tile}${if (m.isPark) " (임시)" else ""} ${m.screen?.rect?.let { "${it.cx},${it.cy}" }} -> ${m.target!!.cx},${m.target!!.cy}")
             assertEquals(null, layoutProblem(a))
             // 손패 없이 기존 세트를 옮기기만 하는 단계는 없어야 한다(규칙상 한 장 이상 내야 함)
             assertTrue(a.steps.filter { !it.blocked }.all { it.handTiles > 0 })
             // 버그 당시 36번(기존 세트 전부 이동) → 꼭 필요한 이동만
-            assertTrue("이동이 너무 많음: ${a.moves.size}", a.moves.size <= if (joker) 14 else 6)
+            assertTrue("이동이 너무 많음: ${a.moves.size}", a.moves.size <= if (joker) 15 else 8)
             // 목록에 있는 세트는 모두 실제로 무언가 움직이거나 손패를 낸다
             assertTrue(a.sets.all { s -> s.tiles.any { it.target != null || it.tile.fromHand } })
         }

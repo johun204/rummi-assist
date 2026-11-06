@@ -18,6 +18,22 @@ fun layoutProblem(a: Advisor.Advice): String? {
     for (s in a.sets) if (s.step !in blockedSteps) for (pt in s.tiles) {
         val r = pt.target ?: if (pt.tile.fromHand) return "손패 ${pt.tile} 목적지 없음" else continue
         if (r.bottom > rec.rackTop || r.left < 0 || r.right > rec.width || r.top < 0) return "${pt.tile} 목적지가 판 밖 $r"
+        // 같은 줄에서 한두 칸 옆으로만 밀기(제자리 세트 정리 아닌 단순 이동) 금지
+        if (pt.target != null && !pt.tile.fromHand && pt.screen != null &&
+            kotlin.math.abs(pt.screen!!.rect.cy - r.cy) < th / 2 && kotlin.math.abs(pt.screen!!.rect.cx - r.cx) < tw * 1.5 &&
+            s.tiles.all { it.tile.fromHand || it.target != null }) return "${pt.tile} 세트째 옆으로 밀기"
+    }
+    // 이동 순서대로 하나씩 옮길 때, 놓는 칸은 그 순간 비어 있어야 한다(타일 위에 덮어 놓기 금지)
+    run {
+        val pos = HashMap<Any, com.johun.rummiassist.core.Rect>()
+        for (t in rec.board) pos[t] = t.rect
+        for (m in a.moves) {
+            val t = m.target!!
+            val src: Any = m.screen ?: m
+            pos.entries.firstOrNull { (k, r) -> k !== src && kotlin.math.abs(r.cx - t.cx) < tw * 0.8 && kotlin.math.abs(r.cy - t.cy) < th * 0.8 }
+                ?.let { return "${m.tile}${if (m.isPark) "(임시)" else ""} 놓을 때 그 칸에 아직 타일이 있음" }
+            pos[src] = t
+        }
     }
     val boardValidAtStart = BoardCheck.problem(rec.board.map { BoardCheck.P(it.kind, it.rect.cx, it.rect.cy) }, tw, th) == null
     for (upto in 1..a.steps.size) {

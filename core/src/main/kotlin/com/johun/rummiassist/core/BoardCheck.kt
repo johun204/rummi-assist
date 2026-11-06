@@ -19,6 +19,15 @@ object BoardCheck {
         return null
     }
 
+    /** 규칙에 안 맞는 정도: 무효 묶음에 든 타일 수 + 겹친 자리 수 x 2 (0 이면 유효한 판) */
+    fun badness(tiles: List<P>, tileW: Int, tileH: Int): Int {
+        var bad = 0
+        for (i in tiles.indices) for (j in i + 1 until tiles.size)
+            if (abs(tiles[i].cx - tiles[j].cx) < tileW * 0.8 && abs(tiles[i].cy - tiles[j].cy) < tileH * 0.8) bad += 2
+        for (g in groups(tiles, tileW, tileH)) if (!Solver.isValidSet(g.map { it.kind })) bad += g.size
+        return bad
+    }
+
     fun groups(tiles: List<P>, tileW: Int, tileH: Int): List<List<P>> {
         val rows = ArrayList<MutableList<P>>()
         for (p in tiles.sortedBy { it.cy }) {

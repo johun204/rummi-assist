@@ -134,7 +134,7 @@ class HighlightView(context: Context) : View(context) {
         stroke.color = withA(col, a8); stroke.pathEffect = dash; stroke.strokeWidth = 2.5f * d
         c.drawRoundRect(to, 6 * d, 6 * d, stroke)
         text.color = withA(0xFFFFFFFF.toInt(), a8); text.textSize = 12 * d
-        c.drawText(if (pt.tile.joker) "☺" else pt.tile.value.toString(), to.centerX(), to.centerY() + 4 * d, text)
+        c.drawText(if (pt.isPark) "임시" else if (pt.tile.joker) "☺" else pt.tile.value.toString(), to.centerX(), to.centerY() + 4 * d, text)
         val from = box(s.rect)
         arrow(c, from.centerX(), from.centerY(), to.centerX(), to.centerY(), col, alpha)
         val r = RectF(from).apply { inset(2 * d, 2 * d) }
@@ -342,7 +342,8 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
         val step = a.steps.first { next in it.moves }
         val t = next.tile
         val name = if (t.joker) "조커" else "${t.color.label}${t.value}"
-        return "단계 ${step.number}/${a.steps.size} · 남은 ${left.size} · ① $name ${if (t.fromHand) "내기" else "옮기기"}"
+        val verb = when { next.isPark -> "빈 칸에 잠시 두기"; t.fromHand -> "내기"; else -> "옮기기" }
+        return "단계 ${step.number}/${a.steps.size} · 남은 ${left.size} · ① $name $verb"
     }
 
     private fun setRow(s: Advisor.PlanSet, focused: Boolean, prog: Tracker.Progress?): View {

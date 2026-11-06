@@ -9,8 +9,11 @@ object Advisor {
      * screen: 화면의 실제 타일(손패/판), target: 옮겨 놓을 판 위 자리(null = 제자리, 또는 놓을 빈 곳이 없음)
      * moved: 판 타일인데 다른 자리로 옮겨야 함
      */
-    class PlanTile(val tile: SetTile, val screen: DetectedTile?, val target: Rect? = null) {
+    class PlanTile(val tile: SetTile, val screen: DetectedTile?, val target: Rect? = null, val parkFor: PlanTile? = null) {
         val moved get() = !tile.fromHand && target != null
+        /** 순환을 풀려고 잠시 내려놓는 빈 칸(이 타일의 첫 이동 parkFor 가 이 칸으로 간다) */
+        var via: Rect? = null
+        val isPark get() = parkFor != null
     }
     /** noRoom: 판에 이 세트를 놓을 빈 자리를 못 찾음(화살표 없음), step: 속한 단계 번호 */
     class PlanSet(val number: Int, val status: Status, val tiles: List<PlanTile>, val noRoom: Boolean = false, val step: Int = 1)
@@ -19,7 +22,7 @@ object Advisor {
      * 실행 단계. 1단계부터 순서대로, 각 단계를 끝까지 하면 그 시점의 판이 규칙에 맞는다(valid).
      * 같은 원래 세트에서 타일을 가져가는 세트들은 한 단계에 묶인다(일부만 하면 원래 세트가 2장 이하로 깨진다).
      */
-    class Step(val number: Int, val sets: List<PlanSet>, val valid: Boolean) {
+    class Step(val number: Int, val sets: List<PlanSet>, val valid: Boolean, private val order: List<PlanTile>? = null) {
         /** 판에 자리가 없어 실행할 수 없는 단계 */
         val blocked get() = sets.any { it.noRoom }
         val handTiles get() = sets.sumOf { s -> s.tiles.count { it.tile.fromHand } }
@@ -28,7 +31,7 @@ object Advisor {
          * (자리 부족 단계는 비어 있음)
          */
         val moves: List<PlanTile> get() = if (blocked) emptyList()
-            else sets.flatMap { s -> s.tiles.filter { it.target != null }.sortedBy { if (it.tile.fromHand) 1 else 0 } }
+            else order ?: sets.flatMap { s -> s.tiles.filter { it.target != null }.sortedBy { if (it.tile.fromHand) 1 else 0 } }
     }
 
     class Advice(
@@ -215,7 +218,7 @@ object Advisor {
         }
         // 자리를 다시 잡느라 함께 넘겼지만 결국 제자리인 기존 세트는 목록에서 빼고 '그대로 둘 세트'로 센다
         val (stillKept, changed) = normalizeSwaps(rec, out).partition { p -> p.tiles.none { it.tile.fromHand } && p.tiles.all { it.target == null } && !p.noRoom }
-        val steps = makeSteps(rec, orig, changed, oneStep = !canMoveBoard)
+        val steps = makeSteps(rec, orig, changed, oneStep = !canMoveBoard, parking = placed.free)
         return Advice(rec, steps.flatMap { it.sets }, keptAnchors.size + stillKept.size, sol.handTiles, sol.handValue, msg, warnings, hint, steps)
     }
 
@@ -268,7 +271,9 @@ object Advisor {
      *    하나로 안 되면 둘씩, 그래도 안 되면 남은 것 전부를 한 단계로.
      * oneStep(첫 등록): 30점은 한 턴에 함께 내야 하므로 한 단계.
      */
-    private fun makeSteps(rec: Recognizer.Result, orig: List<List<DetectedTile>>, sets: List<PlanSet>, oneStep: Boolean): List<Step> {
+    private fun makeSteps(
+        rec: Recognizer.Result, orig: List<List<DetectedTile>>, sets: List<PlanSet>, oneStep: Boolean, parking: List<Rect> = emptyList(),
+    ): List<Step> {
         if (sets.isEmpty()) return emptyList()
         val origOf = HashMap<DetectedTile, Int>()
         orig.forEachIndexed { i, s -> s.forEach { origOf[it] = i } }
@@ -279,32 +284,42 @@ object Advisor {
         var comps: MutableList<List<Int>> = all.filter { c -> c.none { sets[it].noRoom } }.toMutableList()
         val (tw, th) = Placement.tileSize(rec)
         val inPlan = sets.flatMap { s -> s.tiles.mapNotNull { it.screen } }.toHashSet()
-        val blockedSet = blocked.flatten().toSet()
-        fun valid(done: Set<Int>): Boolean {
+        /** 옮긴 이동(applied)만 반영한 판의 타일 위치(잠시 내려놓은 타일은 그 빈 칸에) */
+        val parked = HashSet<PlanTile>()
+        fun positions(applied: Set<PlanTile>): List<BoardCheck.P> {
             val ps = ArrayList<BoardCheck.P>()
             for (t in rec.board) if (t !in inPlan) ps += BoardCheck.P(t.kind, t.rect.cx, t.rect.cy)
-            sets.forEachIndexed { i, s ->
-                for (pt in s.tiles) {
-                    val r = if (i in done) pt.target ?: pt.screen?.rect else if (pt.tile.fromHand) null else pt.screen?.rect
-                    r?.let { ps += BoardCheck.P(pt.tile.kind, it.cx, it.cy) }
-                }
+            for (st in sets) for (pt in st.tiles) {
+                val r = if (pt in applied) pt.target else if (pt in parked) pt.via else if (pt.tile.fromHand) null else pt.screen?.rect
+                r?.let { ps += BoardCheck.P(pt.tile.kind, it.cx, it.cy) }
             }
-            return BoardCheck.problem(ps, tw, th) == null
+            return ps
         }
+        fun movesOf(c: Collection<Int>) = c.flatMap { i -> sets[i].tiles.filter { it.target != null } }
+        fun badness(applied: Set<PlanTile>) = BoardCheck.badness(positions(applied), tw, th)
         fun hand(c: List<Int>) = c.sumOf { i -> sets[i].tiles.count { it.tile.fromHand } }
-        fun moves(c: List<Int>) = c.sumOf { i -> sets[i].tiles.count { it.target != null } }.coerceAtLeast(1)
+        fun moves(c: List<Int>) = movesOf(c).size.coerceAtLeast(1)
         val order = ArrayList<Pair<List<Int>, Boolean>>()
         val done = HashSet<Int>()
+        // 제한 시간이 언제 끝나도 판이 최대한 유효하도록: 실행 후 판의 '무효 타일 수'가 가장 적은 묶음부터,
+        // 같으면 이동 1번당 손패를 많이 내는 것, 그다음 이동이 적은 것.
         while (comps.isNotEmpty()) {
-            // 제한 시간 대비: 이동 1번당 손패를 많이 내는 단계부터, 같으면 이동이 적은 단계부터
-            comps.sortWith(compareByDescending<List<Int>> { hand(it).toDouble() / moves(it) }.thenBy { moves(it) })
-            var pick: List<List<Int>>? = comps.firstOrNull { valid(done + it) }?.let { listOf(it) }
-            if (pick == null) pick = comps.indices.flatMap { a -> (a + 1 until comps.size).map { b -> listOf(comps[a], comps[b]) } }
-                .firstOrNull { (a, b) -> valid(done + a + b) }
-            val chosen = pick ?: comps.toList()
+            val single = comps.minWith(
+                compareBy<List<Int>> { badness(movesOf(done + it).toSet()) }
+                    .thenByDescending { hand(it).toDouble() / moves(it) }.thenBy { moves(it) },
+            )
+            // 하나로는 판이 유효해지지 않으면(다음 단계 타일이 자리를 막거나 붙어 있는 등) 유효해질 때까지
+            // 가장 도움이 되는 묶음을 하나씩 더 합친다 → 모든 단계 경계에서 판이 유효
+            val chosen = mutableListOf(single)
+            fun bad() = badness(movesOf(done + chosen.flatten()).toSet())
+            while (bad() > 0) {
+                val restC = comps.filter { c -> chosen.none { it === c } }
+                if (restC.isEmpty()) break
+                chosen += restC.minBy { c -> badness(movesOf(done + chosen.flatten() + c).toSet()) }
+            }
             val merged = chosen.flatten()
             done += merged
-            order += merged to valid(done)
+            order += merged to (badness(movesOf(done).toSet()) == 0)
             comps = comps.filter { c -> chosen.none { it === c } }.toMutableList()
         }
         // 규칙: 한 턴에 손패를 한 장 이상 내야 판 변경이 인정된다 → 손패를 안 내는 단계(기존 타일 정리만)는
@@ -325,11 +340,48 @@ object Advisor {
         // 손패를 내는 단계가 하나도 없으면(전부 자리 부족) 정리만 하는 단계도 혼자 할 수 없다
         if (rest.isNotEmpty() && order.isNotEmpty() && order.all { hand(it.first) == 0 }) { rest = order.flatMap { it.first } + rest; order.clear() }
         if (rest.isNotEmpty()) order += rest to false
+        // 단계 안의 이동 순서: 이동 하나마다, 그 이동 뒤 판의 무효 타일 수가 가장 적어지는 것부터
+        // (같으면 방금 옮기던 세트를 이어서 → 세트를 하나씩 완성). 중간에 시간이 끝나도 판이 최대한 유효하다.
+        val applied = HashSet<PlanTile>()
+        val stepMoves = order.map { (idx, ok) ->
+            if (!ok && idx.any { sets[it].noRoom }) return@map emptyList<PlanTile>()
+            val left = movesOf(idx).toMutableList()
+            val seq = ArrayList<PlanTile>()
+            var lastSet: PlanSet? = null
+            while (left.isNotEmpty()) {
+                // 놓을 칸에 아직 안 옮긴 타일이 있으면 그 타일을 먼저 옮긴 뒤에(덮어 놓기 금지)
+                val cur = positions(applied)
+                fun blockedNow(m: PlanTile): Boolean {
+                    val t = m.target!!
+                    return cur.any { p -> kotlin.math.abs(p.cx - t.cx) < tw * 0.8 && kotlin.math.abs(p.cy - t.cy) < th * 0.8 }
+                }
+                val eligible = left.filter { !blockedNow(it) }
+                val parkable = left.filter { it !in parked && !it.tile.fromHand }
+                if (eligible.isEmpty() && parkable.isNotEmpty()) {
+                    // 서로의 자리로 가야 해서(순환) 아무것도 먼저 못 옮김 → 하나를 빈 칸에 잠시 내려놓는다(타일마다 한 번만)
+                    val m = parkable.minBy { badness(applied + it) }
+                    fun near(a: Rect, b: Rect) = kotlin.math.abs(a.cx - b.cx) < tw * 0.8 && kotlin.math.abs(a.cy - b.cy) < th * 0.8
+                    val p = parking.firstOrNull { c -> cur.none { kotlin.math.abs(it.cx - c.cx) < tw * 0.8 && kotlin.math.abs(it.cy - c.cy) < th * 0.8 } && left.none { near(it.target!!, c) } }
+                    if (p != null) {
+                        val leg = PlanTile(m.tile, m.screen, p, parkFor = m)
+                        m.via = p
+                        seq += leg; parked += m
+                        continue
+                    }
+                }
+                val m = eligible.ifEmpty { left }.minWith(compareBy<PlanTile> { badness(applied + it) }
+                    .thenBy { if (lastSet != null && it in lastSet!!.tiles) 0 else 1 }
+                    .thenBy { if (it.tile.fromHand) 1 else 0 })
+                left.remove(m); seq += m; applied += m
+                lastSet = sets.first { m in it.tiles }
+            }
+            seq
+        }
         var n = 0
         return order.mapIndexed { k, (idx, ok) ->
             val ss = idx.sortedBy { sets[it].status.ordinal.let { o -> if (o == 1) -1 else o } }
                 .map { i -> val p = sets[i]; PlanSet(++n, p.status, p.tiles, p.noRoom, k + 1) }
-            Step(k + 1, ss, ok)
+            Step(k + 1, ss, ok, stepMoves[k].takeIf { it.isNotEmpty() })
         }
     }
 
