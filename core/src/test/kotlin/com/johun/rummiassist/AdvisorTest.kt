@@ -20,8 +20,9 @@ class AdvisorTest {
                 val t0 = System.currentTimeMillis()
                 val a = Advisor.advise(r, meld)
                 println("== $name meld=$meld ${System.currentTimeMillis() - t0}ms: ${a.message} kept=${a.keptSets} warn=${a.warnings}")
+                assertEquals(null, layoutProblem(a))
                 for (s in a.sets) {
-                    println("   #${s.number} ${s.status}: " + s.tiles.joinToString(" ") { "${it.tile}${if (it.moved) "→" else ""}${if (it.screen == null) "?" else ""}" })
+                    println("   #${s.number} ${s.status}: " + s.tiles.joinToString(" ") { "${it.tile}${if (it.moved) "→" else ""}${it.target?.let { t -> "@${t.cx},${t.cy}" } ?: ""}" })
                     assertTrue(Solver.isValidSet(s.tiles.map { it.tile.kind }))
                     assertTrue("unmapped", s.tiles.all { it.screen != null })
                 }
@@ -30,6 +31,7 @@ class AdvisorTest {
                 val noJ = Advisor.advise(r, meld, useHandJokers = false)
                 println("   noJoker: ${noJ.message} hint=${noJ.jokerHint}")
                 assertTrue(noJ.sets.none { s -> s.tiles.any { it.tile.joker && it.tile.fromHand } })
+                assertEquals(null, layoutProblem(noJ))
                 for (s in noJ.sets) assertTrue(Solver.isValidSet(s.tiles.map { it.tile.kind }))
             }
         }

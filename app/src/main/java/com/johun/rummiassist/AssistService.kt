@@ -57,6 +57,8 @@ class AssistService : AccessibilityService() {
     private var pendingCount = 0
     private var emptyStreak = 0
     private var shown: Frame? = null
+    /** 화살표를 그릴 세트(null = 전부). 새 화면마다 1번 세트부터. */
+    private var focus: Int? = 1
 
     /** 인식 결과 + 게임 창의 화면상 위치 */
     private class Frame(val rec: Recognizer.Result, val x: Int, val y: Int)
@@ -73,15 +75,32 @@ class AssistService : AccessibilityService() {
         get() = prefs.getBoolean("useJoker", false)
         set(v) = prefs.edit().putBoolean("useJoker", v).apply()
 
+    /** 앱 화면의 「루미큐브 분석」 스위치. 꺼지면 버튼과 캡처 루프를 모두 없애 아무 일도 하지 않는다. */
+    private val prefListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == KEY_ENABLED) applyEnabled()
+    }
+
     override fun onServiceConnected() {
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
-        addBubble()
+        prefs.registerOnSharedPreferenceChangeListener(prefListener)
+        applyEnabled()
+    }
+
+    private fun applyEnabled() {
+        if (prefs.getBoolean(KEY_ENABLED, true)) {
+            if (bubble == null) addBubble()
+        } else {
+            stopLive()
+            bubble?.let { wm.removeView(it) }
+            bubble = null
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
     override fun onInterrupt() {}
 
     override fun onDestroy() {
+        prefs.unregisterOnSharedPreferenceChangeListener(prefListener)
         stopLive()
         bubble?.let { wm.removeView(it) }
         bubble = null
@@ -255,6 +274,7 @@ class AssistService : AccessibilityService() {
                 shownSig = sig
                 if (f.rec.board.isEmpty()) meldDone = false // 판이 비었으면 새 게임
                 shown = f
+                focus = 1
                 render()
             } else if (shownSig != null) {
                 // 화면이 바뀜: 옛 제안은 바로 지운다.
@@ -286,9 +306,11 @@ class AssistService : AccessibilityService() {
         val hv = highlight ?: HighlightView(this).also {
             wm.addView(it, overlayParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT, touchable = false))
             highlight = it
+            panel?.bringToFront()
         }
-        hv.setAdvice(advice, showLabels, f.x, f.y)
-        showPanel(advice, null)
+        val fNow = focus?.takeIf { n -> advice.sets.any { it.number == n } }
+        hv.setAdvice(advice, showLabels, f.x, f.y, fNow)
+        showPanel(advice, null, fNow)
     }
 
     private fun showStatus(msg: String) {
@@ -296,7 +318,7 @@ class AssistService : AccessibilityService() {
         showPanel(null, msg)
     }
 
-    private fun showPanel(advice: Advisor.Advice?, status: String?) {
+    private fun showPanel(advice: Advisor.Advice?, status: String?, shownFocus: Int? = null) {
         val p = panel ?: ResultPanel(this, wm).also { panel = it }
         p.show(
             advice, status, meldDone, showLabels, useJoker,
@@ -304,6 +326,9 @@ class AssistService : AccessibilityService() {
             onLabelsToggle = { showLabels = it; render() },
             onJokerToggle = { useJoker = it; render() },
             onClose = { stopLive() },
+            focus = shownFocus,
+            // n = 세트 번호, 0 = 전체
+            onFocus = { n -> focus = if (n == 0) null else n; render() },
         )
         bringBubbleToFront()
     }
@@ -333,6 +358,8 @@ class AssistService : AccessibilityService() {
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
 
     companion object {
+        const val KEY_ENABLED = "enabled"
+
         /** 실시간 캡처 간격(시스템 제한 약 0.33초) */
         const val LIVE_MS = 400L
 

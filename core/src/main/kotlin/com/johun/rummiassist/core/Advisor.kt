@@ -5,9 +5,15 @@ object Advisor {
 
     enum class Status(val label: String) { NEW("새 세트"), EXTENDED("붙이기"), REARRANGED("재배치") }
 
-    /** screen: 화면의 실제 타일(손패/판), moved: 판 타일인데 다른 세트로 옮겨야 함 */
-    class PlanTile(val tile: SetTile, val screen: DetectedTile?, val moved: Boolean)
-    class PlanSet(val number: Int, val status: Status, val tiles: List<PlanTile>)
+    /**
+     * screen: 화면의 실제 타일(손패/판), target: 옮겨 놓을 판 위 자리(null = 제자리, 또는 놓을 빈 곳이 없음)
+     * moved: 판 타일인데 다른 자리로 옮겨야 함
+     */
+    class PlanTile(val tile: SetTile, val screen: DetectedTile?, val target: Rect? = null) {
+        val moved get() = !tile.fromHand && target != null
+    }
+    /** noRoom: 판에 이 세트를 놓을 빈 자리를 못 찾음(화살표 없음) */
+    class PlanSet(val number: Int, val status: Status, val tiles: List<PlanTile>, val noRoom: Boolean = false)
 
     class Advice(
         val recognized: Recognizer.Result,
@@ -125,8 +131,8 @@ object Advisor {
         val origOf = HashMap<DetectedTile, Int>()
         orig.forEachIndexed { i, s -> s.forEach { origOf[it] = i } }
         val usedScreen = HashSet<DetectedTile>()
-        val out = ArrayList<PlanSet>()
-        var kept = 0
+        val pending = ArrayList<Placement.Pending>()
+        val keptAnchors = ArrayList<Int>()
         for (set in sol.sets.sortedBy { s -> s.count { it.fromHand } == s.size }) {
             val boardKinds = set.filter { !it.fromHand }.map { it.kind }
             // 겹치는 판 타일이 가장 많은 원래 세트를 기준으로 삼는다.
@@ -135,23 +141,30 @@ object Advisor {
             val plan = set.map { st ->
                 val cand = rec.tiles.filter { it.kind == st.kind && it.inHand == st.fromHand && it !in usedScreen }
                 val pick = cand.firstOrNull { anchor != null && origOf[it] == anchor } ?: cand.firstOrNull()
-                pick?.let { usedScreen += it }
-                PlanTile(st, pick, !st.fromHand && (pick == null || origOf[pick] != anchor))
+                    ?: return Advice(rec, emptyList(), orig.size, 0, 0, "인식이 불안정해요 — 화면을 그대로 두세요", warnings)
+                usedScreen += pick
+                st to pick
             }
             val anchorKinds = anchor?.let { orig[it].map { t -> t.kind } }
-            val sameAsAnchor = anchorKinds != null && sameMultiset(anchorKinds, set.map { it.kind })
-            if (sameAsAnchor) { kept++; continue }
+            if (anchorKinds != null && sameMultiset(anchorKinds, set.map { it.kind })) { keptAnchors += anchor; continue }
+            pending += Placement.Pending(plan, anchor)
+        }
+        val placed = Placement.place(rec, pending)
+        val out = pending.indices.map { i ->
+            val plan = placed.tiles[i].zip(placed.targets[i]) { p, t -> PlanTile(p.first, p.second, t) }
+            val boardKinds = plan.filter { !it.tile.fromHand }.map { it.tile.kind }
+            val anchorKinds = pending[i].anchor?.let { orig[it].map { t -> t.kind } }
             val status = when {
                 boardKinds.isEmpty() -> Status.NEW
                 anchorKinds != null && plan.none { it.moved } && sameMultiset(anchorKinds, boardKinds) -> Status.EXTENDED
                 else -> Status.REARRANGED
             }
-            out += PlanSet(0, status, plan)
+            PlanSet(0, status, plan, noRoom = !placed.placed[i])
         }
         // 화면 표시 순서: 붙이기 → 새 세트 → 재배치
         val ordered = out.sortedBy { it.status.ordinal.let { o -> if (o == 1) -1 else o } }
-            .mapIndexed { i, p -> PlanSet(i + 1, p.status, p.tiles) }
-        return Advice(rec, ordered, kept, sol.handTiles, sol.handValue, msg, warnings, hint)
+            .mapIndexed { i, p -> PlanSet(i + 1, p.status, p.tiles, p.noRoom) }
+        return Advice(rec, ordered, keptAnchors.size, sol.handTiles, sol.handValue, msg, warnings, hint)
     }
 
     private fun overlap(a: List<TileKind>, b: List<TileKind>): Int {

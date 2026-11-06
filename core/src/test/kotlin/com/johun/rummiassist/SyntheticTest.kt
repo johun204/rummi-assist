@@ -110,20 +110,39 @@ class SyntheticTest {
 
     private class Scene(val img: Img, val boardSets: List<List<TileKind>>, val hand: List<TileKind>, val desc: String)
 
-    private fun randomSet(rnd: Random): List<TileKind> {
-        val tiles: MutableList<TileKind> = if (rnd.nextInt(3) == 0) {
-            val v = rnd.nextInt(1, 14)
-            TileColor.entries.shuffled(rnd).take(rnd.nextInt(3, 5)).map { TileKind.of(it, v) }.toMutableList()
-        } else {
-            val len = rnd.nextInt(3, 7); val start = rnd.nextInt(1, 15 - len); val c = TileColor.entries.random(rnd)
-            (start until start + len).map { TileKind.of(c, it) }.toMutableList()
+    /** 실제 덱(색 4 x 숫자 13 x 2장 + 조커 2)에서 뽑는다. */
+    private class Deck(val rnd: Random) {
+        val left = HashMap<TileKind, Int>().apply {
+            for (c in TileColor.entries) for (v in 1..13) this[TileKind.of(c, v)] = 2
+            this[TileKind.JOKER] = 2
         }
-        if (rnd.nextInt(6) == 0) tiles[rnd.nextInt(tiles.size)] = TileKind.JOKER
-        return tiles
+        fun take(k: List<TileKind>): Boolean {
+            val need = k.groupingBy { it }.eachCount()
+            if (need.any { (t, n) -> (left[t] ?: 0) < n }) return false
+            for ((t, n) in need) left[t] = left.getValue(t) - n
+            return true
+        }
+        fun draw(): TileKind? {
+            val all = left.flatMap { (t, n) -> List(n) { t } }
+            if (all.isEmpty()) return null
+            return all.random(rnd).also { take(listOf(it)) }
+        }
     }
 
-    private fun randomTile(rnd: Random) =
-        if (rnd.nextInt(25) == 0) TileKind.JOKER else TileKind.of(TileColor.entries.random(rnd), rnd.nextInt(1, 14))
+    private fun randomSet(rnd: Random, deck: Deck): List<TileKind>? {
+        repeat(30) {
+            val tiles: MutableList<TileKind> = if (rnd.nextInt(3) == 0) {
+                val v = rnd.nextInt(1, 14)
+                TileColor.entries.shuffled(rnd).take(rnd.nextInt(3, 5)).map { TileKind.of(it, v) }.toMutableList()
+            } else {
+                val len = rnd.nextInt(3, 7); val start = rnd.nextInt(1, 15 - len); val c = TileColor.entries.random(rnd)
+                (start until start + len).map { TileKind.of(c, it) }.toMutableList()
+            }
+            if (rnd.nextInt(6) == 0) tiles[rnd.nextInt(tiles.size)] = TileKind.JOKER
+            if (deck.take(tiles)) return tiles
+        }
+        return null
+    }
 
     private fun makeScene(seed: Int): Scene {
         val rnd = Random(seed)
@@ -145,14 +164,16 @@ class SyntheticTest {
         val hb = (wb * 1.48).roundToInt()
         val pitch = (wb * 1.045).roundToInt()
         val sets = ArrayList<List<TileKind>>()
+        val deck = Deck(rnd)
+        val maxBoard = rnd.nextInt(3, 90) // 판 장수(게임 진행 정도)
         var y = 100
         var redJ = rnd.nextBoolean()
         while (y + hb < rackTop - 20 && sets.size < 30) {
             var x = 320
             var placed = false
-            while (true) {
-                val s = randomSet(rnd)
-                if (x + s.size * pitch > 1690) break
+            while (sets.sumOf { it.size } < maxBoard) {
+                val s = randomSet(rnd, deck) ?: break
+                if (x + s.size * pitch > 1690) { for (k in s) deck.left[k] = deck.left.getValue(k) + 1; break }
                 for ((i, k) in s.withIndex()) { drawTile(scene, x + i * pitch, y, wb, k, redJ); if (k.isJoker) redJ = !redJ }
                 sets += s
                 placed = true
@@ -165,7 +186,7 @@ class SyntheticTest {
         val hp = (wh * 1.045).roundToInt()
         val cap = (1640 - 345) / hp
         val n = rnd.nextInt(1, 2 * cap + 1)
-        val hand = List(n) { randomTile(rnd) }
+        val hand = List(n) { deck.draw() }.filterNotNull()
         for ((i, k) in hand.withIndex()) {
             val r = i / cap; val c = i % cap
             drawTile(scene, 345 + c * hp, row1 + r * (hh * 0.93).roundToInt(), wh, k, rnd.nextBoolean())
@@ -196,6 +217,28 @@ class SyntheticTest {
         }
         println("synthetic: ${n - fails}/$n ok")
         assertTrue("$fails/$n synthetic scenes failed", fails == 0)
+    }
+
+    /** 다양한 크기/배치의 화면에서 제안대로 옮긴 결과가 항상 유효한 판인지. */
+    @Test fun movesProduceValidBoard() {
+        val rec = Recognizer()
+        var bad = 0; var checked = 0; var noRoom = 0; var total = 0
+        val roomLog = ArrayList<Int>()
+        val n = (System.getenv("SYN_N") ?: "120").toInt()
+        for (seed in 1..n) {
+            val sc = makeScene(seed)
+            val r = rec.recognize(sc.img.px, sc.img.w, sc.img.h)
+            for (meld in listOf(true, false)) for (joker in listOf(true, false)) {
+                val a = com.johun.rummiassist.core.Advisor.advise(r, meld, joker)
+                if (a.sets.isEmpty()) continue
+                checked++
+                noRoom += a.sets.count { it.noRoom }; total += a.sets.size
+                if (a.sets.any { it.noRoom }) roomLog += r.board.size
+                layoutProblem(a)?.let { bad++; println("LAYOUT seed=$seed meld=$meld joker=$joker: $it") }
+            }
+        }
+        println("layout: ${checked - bad}/$checked ok, 자리 없음 세트 $noRoom/$total, 그때 판 장수 ${roomLog.sorted()}")
+        assertTrue("$bad/$checked layouts invalid", bad == 0)
     }
 
     companion object {

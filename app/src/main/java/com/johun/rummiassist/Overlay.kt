@@ -37,30 +37,38 @@ fun roundRect(fill: Int, radius: Float, stroke: Int = 0, strokeW: Float = 0f, da
         }
     }
 
-/** 게임 화면 위에 낼 타일(실선)과 옮길 판 타일(점선)을 세트 번호와 함께 그린다. 터치는 통과. */
+/**
+ * 게임 화면 위 표시(터치는 통과):
+ * - 낼 손패 타일(실선)과 옮길 판 타일(점선) 테두리 + 세트 번호
+ * - 놓을 자리(반투명 점선 칸)와 그 자리로 가는 화살표
+ * 화살표와 놓을 자리는 focus 세트만(null 이면 전부), 테두리는 모든 세트.
+ */
 class HighlightView(context: Context) : View(context) {
     private var advice: Advisor.Advice? = null
     private var labels = false
+    private var focus: Int? = null
     /** 인식 좌표(게임 창 기준) → 화면 좌표 */
     private var winX = 0
     private var winY = 0
     private val d = resources.displayMetrics.density
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 4 * d }
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val line = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
     private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.CENTER; typeface = Typeface.DEFAULT_BOLD; color = 0xFF000000.toInt()
     }
     private val dash = DashPathEffect(floatArrayOf(10 * d, 6 * d), 0f)
     private val loc = IntArray(2)
 
-    fun setAdvice(a: Advisor.Advice?, showLabels: Boolean, windowX: Int = 0, windowY: Int = 0) {
-        advice = a; labels = showLabels; winX = windowX; winY = windowY; invalidate()
+    fun setAdvice(a: Advisor.Advice?, showLabels: Boolean, windowX: Int = 0, windowY: Int = 0, focusSet: Int? = null) {
+        advice = a; labels = showLabels; winX = windowX; winY = windowY; focus = focusSet; invalidate()
     }
 
     override fun onDraw(c: Canvas) {
         val a = advice ?: return
         getLocationOnScreen(loc)
         val ox = (loc[0] - winX).toFloat(); val oy = (loc[1] - winY).toFloat()
+        fun box(r: com.johun.rummiassist.core.Rect) = RectF(r.left - ox, r.top - oy, r.right - ox, r.bottom - oy)
         if (labels) {
             text.textSize = 12 * d
             for (t in a.recognized.tiles) {
@@ -73,17 +81,43 @@ class HighlightView(context: Context) : View(context) {
                 c.drawText(t.kind.toString(), bx, by + 12 * d, text)
             }
         }
-        for (set in a.sets) {
+        val sets = a.sets.filter { focus == null || it.number == focus }
+        val all = a.sets
+        // 1) 놓을 자리
+        for (set in sets) {
+            val col = setColor(set.number)
+            for (pt in set.tiles) {
+                val t = pt.target ?: continue
+                val r = box(t).apply { inset(3 * d, 3 * d) }
+                fill.color = (col and 0x00FFFFFF) or 0x55000000
+                c.drawRoundRect(r, 6 * d, 6 * d, fill)
+                stroke.color = col; stroke.pathEffect = dash; stroke.strokeWidth = 2.5f * d
+                c.drawRoundRect(r, 6 * d, 6 * d, stroke)
+                text.color = 0xFFFFFFFF.toInt(); text.textSize = 12 * d
+                c.drawText(if (pt.tile.joker) "☺" else pt.tile.value.toString(), r.centerX(), r.centerY() + 4 * d, text)
+            }
+        }
+        // 2) 화살표 (검은 테두리로 어느 배경에서도 보이게)
+        for (set in sets) {
+            val col = setColor(set.number)
+            for (pt in set.tiles) {
+                val s = pt.screen ?: continue
+                val t = pt.target ?: continue
+                val from = box(s.rect); val to = box(t)
+                arrow(c, from.centerX(), from.centerY(), to.centerX(), to.centerY(), col)
+            }
+        }
+        // 3) 움직일 타일 테두리 + 세트 번호
+        for (set in all) {
             val col = setColor(set.number)
             for (pt in set.tiles) {
                 val s = pt.screen ?: continue
                 if (!pt.tile.fromHand && !pt.moved) continue
-                val r = RectF(s.rect.left - ox, s.rect.top - oy, s.rect.right - ox, s.rect.bottom - oy)
-                r.inset(2 * d, 2 * d)
-                stroke.color = col
+                val r = box(s.rect).apply { inset(2 * d, 2 * d) }
+                stroke.color = if (set in sets) col else (col and 0x00FFFFFF) or 0x99000000.toInt()
+                stroke.strokeWidth = if (set in sets) 4 * d else 2.5f * d
                 stroke.pathEffect = if (pt.tile.fromHand) null else dash
                 c.drawRoundRect(r, 6 * d, 6 * d, stroke)
-                // 세트 번호 배지
                 val rad = 11 * d
                 fill.color = col
                 c.drawCircle(r.left + rad * 0.6f, r.top + rad * 0.6f, rad, fill)
@@ -92,6 +126,31 @@ class HighlightView(context: Context) : View(context) {
                 c.drawText(set.number.toString(), r.left + rad * 0.6f, r.top + rad * 0.6f + 4.5f * d, text)
             }
         }
+    }
+
+    private fun arrow(c: Canvas, x0: Float, y0: Float, x1: Float, y1: Float, col: Int) {
+        val dx = x1 - x0; val dy = y1 - y0
+        val len = kotlin.math.hypot(dx, dy)
+        if (len < 4 * d) return
+        val ux = dx / len; val uy = dy / len
+        val head = 14 * d
+        val ex = x1 - ux * head * 0.6f; val ey = y1 - uy * head * 0.6f
+        val path = android.graphics.Path().apply {
+            moveTo(x1, y1)
+            lineTo(x1 - ux * head - uy * head * 0.55f, y1 - uy * head + ux * head * 0.55f)
+            lineTo(x1 - ux * head + uy * head * 0.55f, y1 - uy * head - ux * head * 0.55f)
+            close()
+        }
+        line.color = 0xAA000000.toInt(); line.strokeWidth = 7 * d
+        c.drawLine(x0, y0, ex, ey, line)
+        fill.color = 0xAA000000.toInt()
+        line.style = Paint.Style.FILL_AND_STROKE; line.strokeWidth = 3 * d
+        c.drawPath(path, line)
+        line.style = Paint.Style.STROKE
+        line.color = col; line.strokeWidth = 3.5f * d
+        c.drawLine(x0, y0, ex, ey, line)
+        fill.color = col
+        c.drawPath(path, fill)
     }
 }
 
@@ -109,6 +168,12 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
 
     fun setVisible(v: Boolean) { root?.visibility = if (v) View.VISIBLE else View.INVISIBLE }
 
+    /** 다른 표시 창보다 위로 */
+    fun bringToFront() {
+        val r = root ?: return
+        wm.removeView(r); wm.addView(r, lp)
+    }
+
     fun remove() {
         root?.let { wm.removeView(it) }
         root = null
@@ -118,7 +183,7 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
     fun show(
         a: Advisor.Advice?, status: String?, meldDone: Boolean, labels: Boolean, useJoker: Boolean,
         onMeldToggle: (Boolean) -> Unit, onLabelsToggle: (Boolean) -> Unit, onJokerToggle: (Boolean) -> Unit,
-        onClose: () -> Unit,
+        onClose: () -> Unit, focus: Int? = null, onFocus: (Int) -> Unit = {},
     ) {
         val r = root ?: LinearLayout(ctx).also {
             it.orientation = LinearLayout.VERTICAL
@@ -151,12 +216,28 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
             ))
             for (w in a.warnings) r.addView(label("⚠ $w", 12f, 0xFFFF8A80.toInt()))
             if (a.sets.isNotEmpty()) {
+                // 세트 하나씩 넘겨 보기(판을 덜 가림). 「전체」면 목록 전부.
+                val n = a.sets.size
+                val nav = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                fun navBtn(t: String, onClick: () -> Unit) = label(t, 16f, 0xFFFFFFFF.toInt(), bold = true).apply {
+                    setPadding((10 * d).toInt(), (2 * d).toInt(), (10 * d).toInt(), (2 * d).toInt())
+                    background = roundRect(0x33FFFFFF, 6 * d)
+                    setOnClickListener { onClick() }
+                }
+                val cur = focus ?: 0
+                nav.addView(navBtn("◀") { onFocus(if (cur <= 1) n else cur - 1) })
+                nav.addView(label(if (focus == null) "  전체 $n  " else "  $cur / $n  ", 14f, 0xFFFFFFFF.toInt(), bold = true))
+                nav.addView(navBtn("▶") { onFocus(if (cur >= n) 1 else cur + 1) })
+                nav.addView(View(ctx), LinearLayout.LayoutParams(0, 1, 1f))
+                nav.addView(navBtn(if (focus == null) "하나씩" else "전체") { onFocus(if (focus == null) 1 else 0) })
+                r.addView(nav)
+                val shownSets = if (focus == null) a.sets else a.sets.filter { it.number == focus }
                 val list = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-                for (s in a.sets) list.addView(setRow(s))
-                val scroll = MaxHeightScroll(ctx, (ctx.resources.displayMetrics.heightPixels * 0.55f).toInt())
+                for (s in shownSets) list.addView(setRow(s, focus == s.number).apply { setOnClickListener { onFocus(s.number) } })
+                val scroll = MaxHeightScroll(ctx, (ctx.resources.displayMetrics.heightPixels * 0.45f).toInt())
                 scroll.addView(list)
                 r.addView(scroll)
-                r.addView(label("실선 = 손패에서 낼 타일 · 점선 = 판에서 옮길 타일", 11f, 0xFF9FB8E8.toInt()))
+                r.addView(label("화살표 = 놓을 자리", 11f, 0xFF9FB8E8.toInt()))
             }
         }
 
@@ -167,11 +248,12 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
         r.addView(opts)
     }
 
-    private fun setRow(s: Advisor.PlanSet): View {
+    private fun setRow(s: Advisor.PlanSet, focused: Boolean): View {
         val row = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, (3 * d).toInt(), 0, (3 * d).toInt())
+            setPadding((2 * d).toInt(), (3 * d).toInt(), 0, (3 * d).toInt())
+            if (focused) background = roundRect(0x33FFFFFF, 6 * d)
         }
         val col = setColor(s.number)
         row.addView(TextView(ctx).apply {
@@ -182,7 +264,7 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
             gravity = Gravity.CENTER
             background = roundRect(col, 10 * d)
         }, LinearLayout.LayoutParams((20 * d).toInt(), (20 * d).toInt()))
-        row.addView(label(s.status.label, 11f, col).apply { setPadding((4 * d).toInt(), 0, (4 * d).toInt(), 0) },
+        row.addView(label(if (s.noRoom) "자리 부족" else s.status.label, 11f, if (s.noRoom) 0xFFFF8A80.toInt() else col).apply { setPadding((4 * d).toInt(), 0, (4 * d).toInt(), 0) },
             LinearLayout.LayoutParams((44 * d).toInt(), -2))
         val chips = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
         for (pt in s.tiles) chips.addView(chip(pt.tile, pt.tile.fromHand, pt.moved, col))
