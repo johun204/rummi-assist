@@ -39,10 +39,11 @@ fun roundRect(fill: Int, radius: Float, stroke: Int = 0, strokeW: Float = 0f, da
     }
 
 /**
- * 게임 화면 위 표시(터치는 통과):
- * - 낼 손패 타일(실선)과 옮길 판 타일(점선) 테두리 + 세트 번호
- * - 놓을 자리(반투명 점선 칸)와 그 자리로 가는 화살표
- * 화살표와 놓을 자리는 focus 단계만(null 이면 전부), 테두리는 남은 모든 타일. 이미 옮긴 타일은 자리에 ✓.
+ * 게임 화면 위 표시(터치는 통과).
+ * 기본(focus = 단계 번호): 남은 이동 중 앞의 3개만 순서대로 — ①은 굵게, ②③은 흐리게.
+ *   이동마다 출발 타일 테두리 + 놓을 자리(반투명 칸) + 화살표 + 순서 번호.
+ * 전체(focus = null): 모든 이동을 세트 색으로.
+ * 이미 옮긴 타일은 놓은 자리에 ✓.
  */
 class HighlightView(context: Context) : View(context) {
     private var advice: Advisor.Advice? = null
@@ -61,6 +62,8 @@ class HighlightView(context: Context) : View(context) {
     }
     private val dash = DashPathEffect(floatArrayOf(10 * d, 6 * d), 0f)
     private val loc = IntArray(2)
+    private var ox = 0f
+    private var oy = 0f
 
     fun setAdvice(
         a: Advisor.Advice?, showLabels: Boolean, windowX: Int = 0, windowY: Int = 0,
@@ -72,12 +75,12 @@ class HighlightView(context: Context) : View(context) {
     /** 아직 안 옮긴 타일의 지금 위치 */
     private fun src(pt: Advisor.PlanTile) = progress?.source?.get(pt) ?: pt.screen
     private fun done(pt: Advisor.PlanTile) = progress?.done?.contains(pt) == true
+    private fun box(r: com.johun.rummiassist.core.Rect) = RectF(r.left - ox, r.top - oy, r.right - ox, r.bottom - oy)
 
     override fun onDraw(c: Canvas) {
         val a = advice ?: return
         getLocationOnScreen(loc)
-        val ox = (loc[0] - winX).toFloat(); val oy = (loc[1] - winY).toFloat()
-        fun box(r: com.johun.rummiassist.core.Rect) = RectF(r.left - ox, r.top - oy, r.right - ox, r.bottom - oy)
+        ox = (loc[0] - winX).toFloat(); oy = (loc[1] - winY).toFloat()
         if (labels) {
             text.textSize = 12 * d
             for (t in a.recognized.tiles) {
@@ -90,68 +93,71 @@ class HighlightView(context: Context) : View(context) {
                 c.drawText(t.kind.toString(), bx, by + 12 * d, text)
             }
         }
-        val sets = a.sets.filter { focus == null || it.step == focus }
-        val all = a.sets
-        // 1) 놓을 자리
-        for (set in sets) {
-            val col = setColor(set.number)
-            for (pt in set.tiles) {
-                val t = pt.target ?: continue
-                val r = box(t).apply { inset(3 * d, 3 * d) }
-                if (done(pt)) {
-                    fill.color = 0xCC2E7D32.toInt()
-                    c.drawCircle(r.right - 9 * d, r.top + 9 * d, 9 * d, fill)
-                    text.color = 0xFFFFFFFF.toInt(); text.textSize = 12 * d
-                    c.drawText("✓", r.right - 9 * d, r.top + 13 * d, text)
-                    continue
-                }
-                fill.color = (col and 0x00FFFFFF) or 0x55000000
-                c.drawRoundRect(r, 6 * d, 6 * d, fill)
-                stroke.color = col; stroke.pathEffect = dash; stroke.strokeWidth = 2.5f * d
-                c.drawRoundRect(r, 6 * d, 6 * d, stroke)
-                text.color = 0xFFFFFFFF.toInt(); text.textSize = 12 * d
-                c.drawText(if (pt.tile.joker) "☺" else pt.tile.value.toString(), r.centerX(), r.centerY() + 4 * d, text)
+        // 이미 옮긴 자리 ✓
+        val shownSteps = if (focus == null) a.steps else a.steps.filter { it.number == focus }
+        for (st in shownSteps) for (pt in st.moves) if (done(pt)) check(c, box(pt.target!!))
+
+        if (focus == null) {
+            for (set in a.sets) {
+                val col = setColor(set.number)
+                for (pt in set.tiles) if (pt.target != null && !done(pt)) drawMove(c, pt, col, 1f, null)
             }
+            return
         }
-        // 2) 화살표 (검은 테두리로 어느 배경에서도 보이게)
-        for (set in sets) {
-            val col = setColor(set.number)
-            for (pt in set.tiles) {
-                if (done(pt)) continue
-                val s = src(pt) ?: continue
-                val t = pt.target ?: continue
-                val from = box(s.rect); val to = box(t)
-                arrow(c, from.centerX(), from.centerY(), to.centerX(), to.centerY(), col)
-            }
-        }
-        // 3) 움직일 타일 테두리 + 세트 번호
-        for (set in all) {
-            val col = setColor(set.number)
-            for (pt in set.tiles) {
-                if (done(pt)) continue
-                val s = src(pt) ?: continue
-                if (!pt.tile.fromHand && !pt.moved) continue
-                val r = box(s.rect).apply { inset(2 * d, 2 * d) }
-                stroke.color = if (set in sets) col else (col and 0x00FFFFFF) or 0x99000000.toInt()
-                stroke.strokeWidth = if (set in sets) 4 * d else 2.5f * d
-                stroke.pathEffect = if (pt.tile.fromHand) null else dash
-                c.drawRoundRect(r, 6 * d, 6 * d, stroke)
-                val rad = 11 * d
-                fill.color = col
-                c.drawCircle(r.left + rad * 0.6f, r.top + rad * 0.6f, rad, fill)
-                text.color = 0xFF000000.toInt()
-                text.textSize = 13 * d
-                c.drawText(set.number.toString(), r.left + rad * 0.6f, r.top + rad * 0.6f + 4.5f * d, text)
-            }
+        // 남은 이동 중 앞의 3개(지금 단계부터 이어서)
+        val all = a.moves
+        val next = all.withIndex().filter { (_, pt) -> !done(pt) && src(pt) != null }.take(3)
+        for ((k, iv) in next.withIndex().reversed()) {
+            val (idx, pt) = iv
+            val col = if (k == 0) 0xFFFFEB3B.toInt() else 0xFFFFFFFF.toInt()
+            drawMove(c, pt, col, if (k == 0) 1f else 0.45f, idx + 1)
         }
     }
 
-    private fun arrow(c: Canvas, x0: Float, y0: Float, x1: Float, y1: Float, col: Int) {
+    private fun check(c: Canvas, r: RectF) {
+        r.inset(3 * d, 3 * d)
+        fill.color = 0xCC2E7D32.toInt()
+        c.drawCircle(r.right - 9 * d, r.top + 9 * d, 9 * d, fill)
+        text.color = 0xFFFFFFFF.toInt(); text.textSize = 12 * d
+        c.drawText("✓", r.right - 9 * d, r.top + 13 * d, text)
+    }
+
+    /** 이동 하나: 놓을 자리 + 화살표 + 출발 타일 테두리 + 번호(order) */
+    private fun drawMove(c: Canvas, pt: Advisor.PlanTile, col: Int, alpha: Float, order: Int?) {
+        val s = src(pt) ?: return
+        val t = pt.target ?: return
+        val a8 = (alpha * 255).toInt()
+        fun withA(cc: Int, aa: Int) = (cc and 0x00FFFFFF) or (aa shl 24)
+        val to = box(t).apply { inset(3 * d, 3 * d) }
+        fill.color = withA(col, (0x55 * alpha).toInt())
+        c.drawRoundRect(to, 6 * d, 6 * d, fill)
+        stroke.color = withA(col, a8); stroke.pathEffect = dash; stroke.strokeWidth = 2.5f * d
+        c.drawRoundRect(to, 6 * d, 6 * d, stroke)
+        text.color = withA(0xFFFFFFFF.toInt(), a8); text.textSize = 12 * d
+        c.drawText(if (pt.tile.joker) "☺" else pt.tile.value.toString(), to.centerX(), to.centerY() + 4 * d, text)
+        val from = box(s.rect)
+        arrow(c, from.centerX(), from.centerY(), to.centerX(), to.centerY(), col, alpha)
+        val r = RectF(from).apply { inset(2 * d, 2 * d) }
+        stroke.color = withA(col, a8); stroke.strokeWidth = if (alpha >= 1f) 4 * d else 2.5f * d
+        stroke.pathEffect = if (pt.tile.fromHand) null else dash
+        c.drawRoundRect(r, 6 * d, 6 * d, stroke)
+        if (order != null) {
+            val rad = (if (alpha >= 1f) 13 else 10) * d
+            fill.color = withA(col, a8)
+            c.drawCircle(r.left + rad * 0.6f, r.top + rad * 0.6f, rad, fill)
+            c.drawCircle(to.left + rad * 0.6f, to.top + rad * 0.6f, rad, fill)
+            text.color = withA(0xFF000000.toInt(), a8); text.textSize = (if (alpha >= 1f) 15 else 12) * d
+            c.drawText(order.toString(), r.left + rad * 0.6f, r.top + rad * 0.6f + 5 * d, text)
+            c.drawText(order.toString(), to.left + rad * 0.6f, to.top + rad * 0.6f + 5 * d, text)
+        }
+    }
+
+    private fun arrow(c: Canvas, x0: Float, y0: Float, x1: Float, y1: Float, col: Int, alpha: Float) {
         val dx = x1 - x0; val dy = y1 - y0
         val len = kotlin.math.hypot(dx, dy)
         if (len < 4 * d) return
         val ux = dx / len; val uy = dy / len
-        val head = 14 * d
+        val head = (if (alpha >= 1f) 18 else 12) * d
         val ex = x1 - ux * head * 0.6f; val ey = y1 - uy * head * 0.6f
         val path = android.graphics.Path().apply {
             moveTo(x1, y1)
@@ -159,15 +165,15 @@ class HighlightView(context: Context) : View(context) {
             lineTo(x1 - ux * head + uy * head * 0.55f, y1 - uy * head - ux * head * 0.55f)
             close()
         }
-        line.color = 0xAA000000.toInt(); line.strokeWidth = 7 * d
+        val a8 = (alpha * 255).toInt()
+        line.color = ((0xAA * alpha).toInt() shl 24); line.strokeWidth = (if (alpha >= 1f) 9 else 5) * d
         c.drawLine(x0, y0, ex, ey, line)
-        fill.color = 0xAA000000.toInt()
         line.style = Paint.Style.FILL_AND_STROKE; line.strokeWidth = 3 * d
         c.drawPath(path, line)
         line.style = Paint.Style.STROKE
-        line.color = col; line.strokeWidth = 3.5f * d
+        line.color = (col and 0x00FFFFFF) or (a8 shl 24); line.strokeWidth = (if (alpha >= 1f) 5 else 3) * d
         c.drawLine(x0, y0, ex, ey, line)
-        fill.color = col
+        fill.color = line.color
         c.drawPath(path, fill)
     }
 }
@@ -212,16 +218,34 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
             root = it
         }
         r.removeAllViews()
+        val again = { show(a, status, meldDone, labels, useJoker, onMeldToggle, onLabelsToggle, onJokerToggle, onClose, focus, onFocus, progress) }
 
-        // 머리: 제목(끌기) + 닫기
+        // 최소화: 한 줄(지금 단계 · 남은 이동 · 다음 이동)만. 누르면 펼침.
+        val minimized = prefs.getBoolean("panelMin", false)
+        val wantW = if (minimized) WindowManager.LayoutParams.WRAP_CONTENT else (300 * d).toInt()
+        if (lp.width != wantW) { lp.width = wantW; wm.updateViewLayout(r, lp) }
+        fun toggleMin() { prefs.edit().putBoolean("panelMin", !minimized).apply(); again() }
+
+        // 머리: 제목(끌기) + 최소화 + 닫기
         val header = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        header.addView(label("루미 도우미 · 실시간  ⠿", 13f, 0xFF9FB8E8.toInt()), LinearLayout.LayoutParams(0, -2, 1f))
+        if (minimized) {
+            header.addView(label(summary(a, status, progress), 13f, 0xFFFFFFFF.toInt(), bold = true).apply {
+                setOnClickListener { toggleMin() }
+            })
+        } else {
+            header.addView(label("루미 도우미 · 실시간  ⠿", 13f, 0xFF9FB8E8.toInt()), LinearLayout.LayoutParams(0, -2, 1f))
+        }
+        header.addView(label(if (minimized) "▢" else "–", 18f, 0xFFFFFFFF.toInt(), bold = true).apply {
+            setPadding((12 * d).toInt(), 0, (6 * d).toInt(), 0)
+            setOnClickListener { toggleMin() }
+        })
         header.addView(label("✕", 18f, 0xFFFFFFFF.toInt()).apply {
             setPadding((10 * d).toInt(), 0, (4 * d).toInt(), 0)
             setOnClickListener { onClose() }
         })
         makeDraggable(header, r)
         r.addView(header)
+        if (minimized) return
 
         if (a == null) {
             r.addView(label(status ?: "", 15f, 0xFFFFFFFF.toInt(), bold = true))
@@ -274,7 +298,7 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
                 val scroll = MaxHeightScroll(ctx, (ctx.resources.displayMetrics.heightPixels * 0.45f).toInt())
                 scroll.addView(list)
                 r.addView(scroll)
-                r.addView(label("화살표 = 놓을 자리 · 다 옮기면 자동으로 다음 단계", 11f, 0xFF9FB8E8.toInt()))
+                r.addView(label("① 노란 화살표부터 순서대로 · 단계가 끝날 때마다 판이 유효 · 「전체」= 모든 화살표", 11f, 0xFF9FB8E8.toInt()))
             }
         }
 
@@ -283,6 +307,19 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
         opts.addView(check("조커 사용", useJoker, onJokerToggle))
         opts.addView(check("인식 표시", labels, onLabelsToggle))
         r.addView(opts)
+    }
+
+    /** 최소화 때 한 줄 요약 */
+    private fun summary(a: Advisor.Advice?, status: String?, prog: Tracker.Progress?): String {
+        if (a == null) return status ?: "루미"
+        if (a.steps.isEmpty()) return a.message
+        val left = a.moves.filter { prog?.done?.contains(it) != true }
+        if (left.isEmpty()) return "✅ 완료 — 턴을 끝내세요"
+        val next = left.first()
+        val step = a.steps.first { next in it.moves }
+        val t = next.tile
+        val name = if (t.joker) "조커" else "${t.color.label}${t.value}"
+        return "단계 ${step.number}/${a.steps.size} · 남은 ${left.size} · ① $name ${if (t.fromHand) "내기" else "옮기기"}"
     }
 
     private fun setRow(s: Advisor.PlanSet, focused: Boolean, prog: Tracker.Progress?): View {

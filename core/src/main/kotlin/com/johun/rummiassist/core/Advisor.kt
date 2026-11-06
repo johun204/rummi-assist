@@ -23,6 +23,12 @@ object Advisor {
         /** 판에 자리가 없어 실행할 수 없는 단계 */
         val blocked get() = sets.any { it.noRoom }
         val handTiles get() = sets.sumOf { s -> s.tiles.count { it.tile.fromHand } }
+        /**
+         * 이 단계의 이동을 할 순서: 세트 하나씩 끝내며, 세트 안에선 판 타일을 먼저 옮기고 손패를 놓는다.
+         * (자리 부족 단계는 비어 있음)
+         */
+        val moves: List<PlanTile> get() = if (blocked) emptyList()
+            else sets.flatMap { s -> s.tiles.filter { it.target != null }.sortedBy { if (it.tile.fromHand) 1 else 0 } }
     }
 
     class Advice(
@@ -36,7 +42,10 @@ object Advisor {
         /** 조커를 안 쓰기로 했을 때, 썼다면 얼마나 더 낼 수 있는지 */
         val jokerHint: String? = null,
         val steps: List<Step> = emptyList(),
-    )
+    ) {
+        /** 전체 이동 순서(단계 순 → 단계 안 순서). 앞에서부터 하면 단계가 끝날 때마다 판이 유효. */
+        val moves: List<PlanTile> get() = steps.flatMap { it.moves }
+    }
 
     /**
      * @param useHandJokers false 면 손패 조커는 없는 것으로 계산(판 위 조커는 규칙상 계속 써야 함)
@@ -237,7 +246,7 @@ object Advisor {
     /**
      * 세트들을 실행 단계로 나눈다.
      * 1) 같은 원래 판 세트의 타일을 쓰는 세트끼리 묶음(합집합 찾기).
-     * 2) 남은 묶음 중, 지금까지 한 단계 + 이 묶음을 실행한 판이 유효한 것을 손패를 많이 내는 순으로 고른다.
+     * 2) 남은 묶음 중, 지금까지 한 단계 + 이 묶음을 실행한 판이 유효한 것을 '이동 1번당 낼 수 있는 손패'가 많은 순으로 고른다.
      *    하나로 안 되면 둘씩, 그래도 안 되면 남은 것 전부를 한 단계로.
      * oneStep(첫 등록): 30점은 한 턴에 함께 내야 하므로 한 단계.
      */
@@ -265,10 +274,12 @@ object Advisor {
             return BoardCheck.problem(ps, tw, th) == null
         }
         fun hand(c: List<Int>) = c.sumOf { i -> sets[i].tiles.count { it.tile.fromHand } }
+        fun moves(c: List<Int>) = c.sumOf { i -> sets[i].tiles.count { it.target != null } }.coerceAtLeast(1)
         val order = ArrayList<Pair<List<Int>, Boolean>>()
         val done = HashSet<Int>()
         while (comps.isNotEmpty()) {
-            comps.sortByDescending { hand(it) }
+            // 제한 시간 대비: 이동 1번당 손패를 많이 내는 단계부터, 같으면 이동이 적은 단계부터
+            comps.sortWith(compareByDescending<List<Int>> { hand(it).toDouble() / moves(it) }.thenBy { moves(it) })
             var pick: List<List<Int>>? = comps.firstOrNull { valid(done + it) }?.let { listOf(it) }
             if (pick == null) pick = comps.indices.flatMap { a -> (a + 1 until comps.size).map { b -> listOf(comps[a], comps[b]) } }
                 .firstOrNull { (a, b) -> valid(done + a + b) }
