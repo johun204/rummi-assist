@@ -233,11 +233,19 @@ class SyntheticTest {
                 if (a.sets.isEmpty()) continue
                 checked++
                 noRoom += a.sets.count { it.noRoom }; total += a.sets.size
-                if (a.sets.any { it.noRoom }) roomLog += r.board.size
+                if (a.sets.any { it.noRoom }) {
+                    // 판 칸 수 대비 완성 판 타일 수(세트 사이 한 칸 포함)
+                    val bw = (r.board.firstOrNull() ?: r.hand.first()).rect
+                    val cols = (r.width * 0.71 / (bw.width * 1.04)).toInt()
+                    val rowsN = ((r.rackTop - r.height * 0.1) / (bw.height * 1.04)).toInt()
+                    val need = a.sets.sumOf { it.tiles.size + 1 } + r.board.size + r.boardSets.size
+                    roomLog += (100 * need / maxOf(1, cols * rowsN))
+                    if (need < cols * rowsN * 0.6) println("ROOM? seed=$seed meld=$meld need=$need cells=${cols * rowsN} sets=${a.sets.size}")
+                }
                 layoutProblem(a)?.let { bad++; println("LAYOUT seed=$seed meld=$meld joker=$joker: $it") }
             }
         }
-        println("layout: ${checked - bad}/$checked ok, 자리 없음 세트 $noRoom/$total, 그때 판 장수 ${roomLog.sorted()}")
+        println("layout: ${checked - bad}/$checked ok, 자리 없음 세트 $noRoom/$total, 그때 필요칸/전체칸(%) ${roomLog.sorted()}")
         assertTrue("$bad/$checked layouts invalid", bad == 0)
     }
 

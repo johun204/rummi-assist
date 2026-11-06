@@ -21,7 +21,11 @@ internal object Placement {
     /** tiles: 세트별 타일(그룹은 놓을 순서로 재정렬), targets: 타일별 목적지(null = 제자리) */
     class Out(val tiles: List<List<Pair<SetTile, DetectedTile>>>, val targets: List<List<Rect?>>, val placed: List<Boolean>)
 
-    fun place(rec: Recognizer.Result, sets: List<Pending>): Out {
+    /**
+     * repack = true: 모든 세트(그대로 둘 세트 포함)를 긴 것부터 빈 판에 차곡차곡 다시 놓는다.
+     * 판이 조각나 자리가 모자랄 때 쓰는 대안(움직이는 타일은 늘지만 완성된 판이 반드시 유효).
+     */
+    fun place(rec: Recognizer.Result, sets: List<Pending>, repack: Boolean = false): Out {
         val orig = rec.boardSets
         val board = rec.board
         val ref = board.firstOrNull() ?: rec.hand.firstOrNull() ?: return Out(sets.map { it.tiles }, sets.map { s -> s.tiles.map { null } }, sets.map { false })
@@ -91,7 +95,7 @@ internal object Placement {
         for (t in board) cellOf(t)?.let { (r, c) -> now.getOrPut(r) { HashSet() } += c }
         // 이번 수에 쓰이지 않는 판 타일(그대로 둘 세트, 첫 등록 때의 판 전체)은 제자리를 차지한다.
         val used = sets.flatMap { s -> s.tiles.map { it.second } }.toHashSet()
-        for ((i, s) in orig.withIndex()) for (t in s) if (t !in used) cellOf(t)?.let { (r, c) -> occ.getOrPut(r) { HashMap() }[c] = -1 - i }
+        if (!repack) for ((i, s) in orig.withIndex()) for (t in s) if (t !in used) cellOf(t)?.let { (r, c) -> occ.getOrPut(r) { HashMap() }[c] = -1 - i }
 
         fun fits(r: Row, c0: Int, n: Int, owner: Int, avoidNow: Boolean): Boolean {
             val range = colRange(r)
@@ -105,7 +109,8 @@ internal object Placement {
         val outTiles = ArrayList<List<Pair<SetTile, DetectedTile>>>()
         val outTargets = ArrayList<List<Rect?>>()
         // 남는 판 타일이 많은 세트부터 제자리 배치를 시도
-        val order = sets.indices.sortedByDescending { i -> sets[i].tiles.count { (st, d) -> !st.fromHand && sets[i].anchor != null && d in orig[sets[i].anchor!!] } }
+        val order = if (repack) sets.indices.sortedByDescending { sets[it].tiles.size }
+        else sets.indices.sortedByDescending { i -> sets[i].tiles.count { (st, d) -> !st.fromHand && sets[i].anchor != null && d in orig[sets[i].anchor!!] } }
         val placed = arrayOfNulls<Pair<Row, Int>>(sets.size)
         val finalTiles = arrayOfNulls<List<Pair<SetTile, DetectedTile>>>(sets.size)
         for (i in order) {
@@ -125,7 +130,7 @@ internal object Placement {
             }
             val inPlace = votes.entries.sortedByDescending { it.value }.map { it.key }
                 .firstOrNull { (r, c0) -> fits(r, c0, tiles.size, i, avoidNow = false) }
-            val spot = inPlace
+            val spot = (if (repack) null else inPlace)
                 ?: rows.firstNotNullOfOrNull { r -> colRange(r).firstOrNull { fits(r, it, tiles.size, i, true) }?.let { r to it } }
                 ?: rows.firstNotNullOfOrNull { r -> colRange(r).firstOrNull { fits(r, it, tiles.size, i, false) }?.let { r to it } }
             if (spot != null) {

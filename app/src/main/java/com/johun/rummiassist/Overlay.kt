@@ -207,6 +207,10 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
         if (a == null) {
             r.addView(label(status ?: "", 15f, 0xFFFFFFFF.toInt(), bold = true))
         } else {
+            r.addView(label(
+                if (meldDone) "모드: 판 재배치 포함 최대 장수" else "모드: 첫 등록 전 — 손패만으로 30점 (판 사용 불가)",
+                11f, if (meldDone) 0xFF80CBC4.toInt() else 0xFFFFB74D.toInt(), bold = true,
+            ))
             r.addView(label(a.message, 16f, 0xFFFFFFFF.toInt(), bold = true))
             a.jokerHint?.let { r.addView(label("☺ $it", 12f, 0xFFFFEB3B.toInt())) }
             r.addView(label(

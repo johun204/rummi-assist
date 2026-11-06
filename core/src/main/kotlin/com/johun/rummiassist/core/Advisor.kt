@@ -3,7 +3,7 @@ package com.johun.rummiassist.core
 /** 인식 결과 → 추천 수. 판에 이미 있는 세트는 가능한 한 그대로 두고, 바뀌는 세트만 알려 준다. */
 object Advisor {
 
-    enum class Status(val label: String) { NEW("새 세트"), EXTENDED("붙이기"), REARRANGED("재배치") }
+    enum class Status(val label: String) { NEW("새 세트"), EXTENDED("붙이기"), REARRANGED("재배치"), MOVED("자리 이동") }
 
     /**
      * screen: 화면의 실제 타일(손패/판), target: 옮겨 놓을 판 위 자리(null = 제자리, 또는 놓을 빈 곳이 없음)
@@ -48,7 +48,7 @@ object Advisor {
 
         fun result(sol: Solution?, msg: String, hint: String? = null): Advice {
             if (sol == null || sol.handTiles == 0) return Advice(rec, emptyList(), origSets.size, 0, 0, msg, warnings, hint)
-            val a = present(rec, origSets, sol, msg, warnings, hint)
+            val a = present(rec, origSets, sol, msg, warnings, hint, initialMeldDone)
             // 화면에 없는 타일이 하나라도 들어간 제안은 보여 주지 않는다.
             if (a.sets.any { s -> s.tiles.any { it.screen == null } })
                 return Advice(rec, emptyList(), origSets.size, 0, 0, "인식이 불안정해요 — 화면을 그대로 두세요", warnings)
@@ -81,7 +81,7 @@ object Advisor {
             if (j.handTiles > sol.handTiles) "조커를 쓰면 ${j.handTiles - sol.handTiles}장 더 낼 수 있어요" else null
         } else null
         if (sol.handTiles == 0) return result(null, "낼 수 있는 조합이 없어요 — 타일을 뽑으세요", hint)
-        return result(preserve(sol, validOrig), "손패 ${sol.handTiles}장 내기 (합 ${sol.handValue})", hint)
+        return result(preserve(sol, validOrig), "최대 ${sol.handTiles}장 내기 (합 ${sol.handValue})", hint)
     }
 
     /** 같은 손패 사용량을 유지하면서 원래 판 세트를 최대한 그대로 남기도록 다시 나눈다. */
@@ -127,6 +127,7 @@ object Advisor {
 
     private fun present(
         rec: Recognizer.Result, orig: List<List<DetectedTile>>, sol: Solution, msg: String, warnings: List<String>, hint: String?,
+        canMoveBoard: Boolean,
     ): Advice {
         val origOf = HashMap<DetectedTile, Int>()
         orig.forEachIndexed { i, s -> s.forEach { origOf[it] = i } }
@@ -149,23 +150,37 @@ object Advisor {
             if (anchorKinds != null && sameMultiset(anchorKinds, set.map { it.kind })) { keptAnchors += anchor; continue }
             pending += Placement.Pending(plan, anchor)
         }
-        val placed = Placement.place(rec, pending)
-        val out = pending.indices.map { i ->
+        var all: List<Placement.Pending> = pending
+        var placed = Placement.place(rec, all)
+        if (placed.placed.any { !it } && canMoveBoard) {
+            // 자리가 모자라면 그대로 둘 세트까지 포함해 판 전체를 다시 채워 본다(첫 등록 전엔 판을 못 건드리니 안 함).
+            val used = pending.flatMap { p -> p.tiles.map { it.second } }.toHashSet()
+            val untouched = orig.indices.filter { a -> orig[a].none { it in used } }
+            val withKept = pending + untouched.map { a -> Placement.Pending(keptTiles(orig[a]), a) }
+            val re = Placement.place(rec, withKept, repack = true)
+            if (re.placed.count { !it } < placed.placed.count { !it }) { all = withKept; placed = re; keptAnchors.clear() }
+        }
+        val out = all.indices.map { i ->
             val plan = placed.tiles[i].zip(placed.targets[i]) { p, t -> PlanTile(p.first, p.second, t) }
             val boardKinds = plan.filter { !it.tile.fromHand }.map { it.tile.kind }
-            val anchorKinds = pending[i].anchor?.let { orig[it].map { t -> t.kind } }
+            val anchorKinds = all[i].anchor?.let { orig[it].map { t -> t.kind } }
             val status = when {
                 boardKinds.isEmpty() -> Status.NEW
+                plan.none { it.tile.fromHand } -> Status.MOVED
                 anchorKinds != null && plan.none { it.moved } && sameMultiset(anchorKinds, boardKinds) -> Status.EXTENDED
                 else -> Status.REARRANGED
             }
             PlanSet(0, status, plan, noRoom = !placed.placed[i])
         }
-        // 화면 표시 순서: 붙이기 → 새 세트 → 재배치
+        // 화면 표시 순서: 붙이기 → 새 세트 → 재배치 → 자리 이동
         val ordered = out.sortedBy { it.status.ordinal.let { o -> if (o == 1) -1 else o } }
             .mapIndexed { i, p -> PlanSet(i + 1, p.status, p.tiles, p.noRoom) }
         return Advice(rec, ordered, keptAnchors.size, sol.handTiles, sol.handValue, msg, warnings, hint)
     }
+
+    /** 그대로 둘 판 세트를 (대신하는 숫자를 채운) SetTile 과 화면 타일 쌍으로 */
+    private fun keptTiles(set: List<DetectedTile>): List<Pair<SetTile, DetectedTile>> =
+        representAsSetTiles(set.map { it.kind }).zip(set)
 
     private fun overlap(a: List<TileKind>, b: List<TileKind>): Int {
         val m = HashMap<TileKind, Int>()

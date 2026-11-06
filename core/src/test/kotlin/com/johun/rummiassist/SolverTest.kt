@@ -72,6 +72,43 @@ class SolverTest {
         }
     }
 
+    /** 판(반드시 전부 사용, 재배치 자유) + 손패 국면에서 전수 탐색과 최적값 비교. */
+    @Test fun matchesBruteForceWithBoard() {
+        val rnd = Random(11)
+        var rearranged = 0
+        repeat(400) {
+            val pool = ArrayList<TileKind>()
+            for (c in TileColor.entries) for (v in 1..6) repeat(2) { pool += TileKind.of(c, v) }
+            pool += TileKind.JOKER; pool += TileKind.JOKER
+            pool.shuffle(rnd)
+            // 판: 유효한 세트 1~2개를 풀에서 만든다
+            val board = ArrayList<TileKind>()
+            repeat(rnd.nextInt(1, 3)) {
+                val c = TileColor.entries.random(rnd); val start = rnd.nextInt(1, 5)
+                val run = (start until start + 3).map { TileKind.of(c, it) }
+                if (run.all { k -> pool.remove(k) }) board += run
+            }
+            val hand = pool.take(rnd.nextInt(2, 8))
+            val bStr = board.joinToString(" "); val hStr = hand.joinToString(" ")
+            val sol = solve(bStr, hStr)!!
+            checkValid(bStr, hStr, sol)
+            val best = bruteWithBoard(board, hand)
+            assertEquals("board=$bStr hand=$hStr", best, sol.handTiles)
+            if (sol.handTiles > 0 && sol.sets.any { s -> s.any { !it.fromHand } && s.any { it.fromHand } }) rearranged++
+        }
+        println("board+hand brute force ok, 판 타일과 섞인 세트가 나온 국면 $rearranged")
+    }
+
+    private fun bruteWithBoard(board: List<TileKind>, hand: List<TileKind>): Int {
+        var best = 0
+        for (mask in 0 until (1 shl hand.size)) {
+            val cnt = Integer.bitCount(mask)
+            if (cnt <= best) continue
+            if (partition(board + hand.filterIndexed { i, _ -> mask shr i and 1 == 1 })) best = cnt
+        }
+        return best
+    }
+
     /** 손패에서 고를 수 있는 최대 장수: 부분집합을 큰 것부터 유효 세트로 분할 가능한지 확인. */
     private fun brute(hand: List<TileKind>): Int {
         val n = hand.size

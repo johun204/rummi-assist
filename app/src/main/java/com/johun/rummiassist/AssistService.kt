@@ -57,6 +57,8 @@ class AssistService : AccessibilityService() {
     private var pendingCount = 0
     private var emptyStreak = 0
     private var shown: Frame? = null
+    /** 첫 등록 전으로 바뀐 시점의 손패/판 장수: 여기서 손패가 3장 이상 판으로 나가면 등록한 것으로 본다. */
+    private var meldBase: Pair<Int, Int>? = null
     /** 화살표를 그릴 세트(null = 전부). 새 화면마다 1번 세트부터. */
     private var focus: Int? = 1
 
@@ -64,8 +66,9 @@ class AssistService : AccessibilityService() {
     private class Frame(val rec: Recognizer.Result, val x: Int, val y: Int)
 
     private val prefs by lazy { getSharedPreferences("settings", Context.MODE_PRIVATE) }
+    /** 첫 등록(30점) 완료 여부. 기본은 완료(게임 중간에 켜는 경우가 대부분). 판이 비면 새 게임으로 보고 해제. */
     private var meldDone: Boolean
-        get() = prefs.getBoolean("meldDone", false)
+        get() = prefs.getBoolean("meldDone", true)
         set(v) = prefs.edit().putBoolean("meldDone", v).apply()
     private var showLabels: Boolean
         get() = prefs.getBoolean("showLabels", false)
@@ -272,7 +275,7 @@ class AssistService : AccessibilityService() {
             if (sig == pendingSig) pendingCount++ else { pendingSig = sig; pendingCount = 1 }
             if (pendingCount >= 2) {
                 shownSig = sig
-                if (f.rec.board.isEmpty()) meldDone = false // 판이 비었으면 새 게임
+                updateMeld(f)
                 shown = f
                 focus = 1
                 render()
@@ -285,6 +288,15 @@ class AssistService : AccessibilityService() {
         }
         // 전체 화면 캡처 방식은 캡처마다 표시를 숨기므로 덜 자주.
         schedule(if (windowCapture) LIVE_MS else 1000)
+    }
+
+    private fun updateMeld(f: Frame) {
+        val hand = f.rec.hand.size; val board = f.rec.board.size
+        if (board == 0) { meldDone = false; meldBase = hand to 0; return } // 판이 비었으면 새 게임
+        if (meldDone) return
+        val base = meldBase ?: (hand to board).also { meldBase = it }
+        val played = base.first - hand
+        if (played >= 3 && board - base.second >= played) { meldDone = true; meldBase = null }
     }
 
     /** 타일 종류·위치(8px 단위)·창 위치가 같으면 같은 화면 */
@@ -322,7 +334,7 @@ class AssistService : AccessibilityService() {
         val p = panel ?: ResultPanel(this, wm).also { panel = it }
         p.show(
             advice, status, meldDone, showLabels, useJoker,
-            onMeldToggle = { meldDone = it; render() },
+            onMeldToggle = { meldDone = it; meldBase = null; render() },
             onLabelsToggle = { showLabels = it; render() },
             onJokerToggle = { useJoker = it; render() },
             onClose = { stopLive() },
