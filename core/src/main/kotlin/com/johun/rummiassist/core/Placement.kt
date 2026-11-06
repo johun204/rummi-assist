@@ -25,12 +25,27 @@ internal object Placement {
      * repack = true: 모든 세트(그대로 둘 세트 포함)를 긴 것부터 빈 판에 차곡차곡 다시 놓는다.
      * 판이 조각나 자리가 모자랄 때 쓰는 대안(움직이는 타일은 늘지만 완성된 판이 반드시 유효).
      */
-    fun place(rec: Recognizer.Result, sets: List<Pending>, repack: Boolean = false): Out {
+    /**
+     * 자리를 못 찾은 세트는 실행할 수 없고, 같은 원래 판 세트를 나눠 쓰는 세트들(linked)도 함께 실행할 수 없다.
+     * 그 세트들의 판 타일은 실제로 제자리에 남으므로 그 칸을 막고 다시 배치한다(더 안 바뀔 때까지).
+     */
+    fun place(rec: Recognizer.Result, sets: List<Pending>, repack: Boolean = false, linked: (Set<Int>) -> Set<Int> = { it }): Out {
+        var stuck = emptySet<Int>()
+        var out = placeOnce(rec, sets, repack, stuck)
+        repeat(6) {
+            val now = linked(sets.indices.filter { !out.placed[it] }.toSet())
+            if (now == stuck || now.isEmpty()) return out
+            stuck = now
+            out = placeOnce(rec, sets, repack, stuck)
+        }
+        return out
+    }
+
+    private fun placeOnce(rec: Recognizer.Result, sets: List<Pending>, repack: Boolean, stuck: Set<Int>): Out {
         val orig = rec.boardSets
         val board = rec.board
-        val ref = board.firstOrNull() ?: rec.hand.firstOrNull() ?: return Out(sets.map { it.tiles }, sets.map { s -> s.tiles.map { null } }, sets.map { false })
-        val tileW = if (board.isNotEmpty()) ref.rect.width else (ref.rect.width * 0.75).roundToInt()
-        val tileH = if (board.isNotEmpty()) ref.rect.height else (ref.rect.height * 0.75).roundToInt()
+        if (rec.tiles.isEmpty()) return Out(sets.map { it.tiles }, sets.map { s -> s.tiles.map { null } }, sets.map { false })
+        val (tileW, tileH) = tileSize(rec)
         // 타일 간격: 이웃 간격 중앙값으로 대략 잡고, 같은 줄 타일 쌍 전체(칸 수로 나눔)로 정밀하게 다듬는다.
         val p0 = orig.flatMap { s -> s.sortedBy { it.rect.cx }.zipWithNext { a, b -> (b.rect.cx - a.rect.cx).toDouble() } }
             .sorted().let { if (it.isEmpty()) tileW * 1.045 else it[it.size / 2] }
@@ -94,8 +109,10 @@ internal object Placement {
         val now = HashMap<Row, HashSet<Int>>()          // 지금 타일이 있는 칸
         for (t in board) cellOf(t)?.let { (r, c) -> now.getOrPut(r) { HashSet() } += c }
         // 이번 수에 쓰이지 않는 판 타일(그대로 둘 세트, 첫 등록 때의 판 전체)은 제자리를 차지한다.
-        val used = sets.flatMap { s -> s.tiles.map { it.second } }.toHashSet()
-        if (!repack) for ((i, s) in orig.withIndex()) for (t in s) if (t !in used) cellOf(t)?.let { (r, c) -> occ.getOrPut(r) { HashMap() }[c] = -1 - i }
+        val used = sets.filterIndexed { i, _ -> i !in stuck }.flatMap { s -> s.tiles.map { it.second } }.toHashSet()
+        val stuckTiles = stuck.flatMap { i -> sets[i].tiles.filter { !it.first.fromHand }.map { it.second } }.toHashSet()
+        for ((i, s) in orig.withIndex()) for (t in s)
+            if ((!repack && t !in used) || t in stuckTiles) cellOf(t)?.let { (r, c) -> occ.getOrPut(r) { HashMap() }[c] = -1 - i }
 
         fun fits(r: Row, c0: Int, n: Int, owner: Int, avoidNow: Boolean): Boolean {
             val range = colRange(r)
@@ -114,6 +131,7 @@ internal object Placement {
         val placed = arrayOfNulls<Pair<Row, Int>>(sets.size)
         val finalTiles = arrayOfNulls<List<Pair<SetTile, DetectedTile>>>(sets.size)
         for (i in order) {
+            if (i in stuck) continue
             val s = sets[i]
             val stayCand = { d: DetectedTile, st: SetTile -> !st.fromHand && s.anchor != null && d in orig[s.anchor] }
             var tiles = s.tiles
@@ -139,7 +157,7 @@ internal object Placement {
             }
         }
         for (i in sets.indices) {
-            val tiles = finalTiles[i]!!
+            val tiles = finalTiles[i] ?: sets[i].tiles
             val spot = placed[i]
             outTiles += tiles
             outTargets += tiles.mapIndexed { k, (st, d) ->
@@ -149,6 +167,13 @@ internal object Placement {
             }
         }
         return Out(outTiles, outTargets, placed.map { it != null })
+    }
+
+    /** 판 타일 크기. 판이 비었으면 손패 타일의 75%로 가정. */
+    fun tileSize(rec: Recognizer.Result): Pair<Int, Int> {
+        rec.board.firstOrNull()?.let { return it.rect.width to it.rect.height }
+        val h = rec.hand.firstOrNull() ?: return 1 to 1
+        return (h.rect.width * 0.75).roundToInt() to (h.rect.height * 0.75).roundToInt()
     }
 
     private fun isGroup(t: List<SetTile>) = t.size <= 4 && t.all { it.value == t[0].value } && t.map { it.color }.toSet().size == t.size

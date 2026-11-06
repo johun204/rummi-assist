@@ -21,6 +21,7 @@ class AdvisorTest {
                 val a = Advisor.advise(r, meld)
                 println("== $name meld=$meld ${System.currentTimeMillis() - t0}ms: ${a.message} kept=${a.keptSets} warn=${a.warnings}")
                 assertEquals(null, layoutProblem(a))
+                for (st in a.steps) println("   단계 ${st.number}: 세트 ${st.sets.map { it.number }} 손패 ${st.handTiles}장 valid=${st.valid}")
                 for (s in a.sets) {
                     println("   #${s.number} ${s.status}: " + s.tiles.joinToString(" ") { "${it.tile}${if (it.moved) "→" else ""}${it.target?.let { t -> "@${t.cx},${t.cy}" } ?: ""}" })
                     assertTrue(Solver.isValidSet(s.tiles.map { it.tile.kind }))

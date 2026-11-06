@@ -19,6 +19,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import com.johun.rummiassist.core.Advisor
 import com.johun.rummiassist.core.SetTile
+import com.johun.rummiassist.core.Tracker
 
 /** 세트 번호별 표시 색 */
 val SET_COLORS = intArrayOf(
@@ -41,12 +42,13 @@ fun roundRect(fill: Int, radius: Float, stroke: Int = 0, strokeW: Float = 0f, da
  * 게임 화면 위 표시(터치는 통과):
  * - 낼 손패 타일(실선)과 옮길 판 타일(점선) 테두리 + 세트 번호
  * - 놓을 자리(반투명 점선 칸)와 그 자리로 가는 화살표
- * 화살표와 놓을 자리는 focus 세트만(null 이면 전부), 테두리는 모든 세트.
+ * 화살표와 놓을 자리는 focus 단계만(null 이면 전부), 테두리는 남은 모든 타일. 이미 옮긴 타일은 자리에 ✓.
  */
 class HighlightView(context: Context) : View(context) {
     private var advice: Advisor.Advice? = null
     private var labels = false
     private var focus: Int? = null
+    private var progress: Tracker.Progress? = null
     /** 인식 좌표(게임 창 기준) → 화면 좌표 */
     private var winX = 0
     private var winY = 0
@@ -60,9 +62,16 @@ class HighlightView(context: Context) : View(context) {
     private val dash = DashPathEffect(floatArrayOf(10 * d, 6 * d), 0f)
     private val loc = IntArray(2)
 
-    fun setAdvice(a: Advisor.Advice?, showLabels: Boolean, windowX: Int = 0, windowY: Int = 0, focusSet: Int? = null) {
-        advice = a; labels = showLabels; winX = windowX; winY = windowY; focus = focusSet; invalidate()
+    fun setAdvice(
+        a: Advisor.Advice?, showLabels: Boolean, windowX: Int = 0, windowY: Int = 0,
+        focusStep: Int? = null, prog: Tracker.Progress? = null,
+    ) {
+        advice = a; labels = showLabels; winX = windowX; winY = windowY; focus = focusStep; progress = prog; invalidate()
     }
+
+    /** 아직 안 옮긴 타일의 지금 위치 */
+    private fun src(pt: Advisor.PlanTile) = progress?.source?.get(pt) ?: pt.screen
+    private fun done(pt: Advisor.PlanTile) = progress?.done?.contains(pt) == true
 
     override fun onDraw(c: Canvas) {
         val a = advice ?: return
@@ -81,7 +90,7 @@ class HighlightView(context: Context) : View(context) {
                 c.drawText(t.kind.toString(), bx, by + 12 * d, text)
             }
         }
-        val sets = a.sets.filter { focus == null || it.number == focus }
+        val sets = a.sets.filter { focus == null || it.step == focus }
         val all = a.sets
         // 1) 놓을 자리
         for (set in sets) {
@@ -89,6 +98,13 @@ class HighlightView(context: Context) : View(context) {
             for (pt in set.tiles) {
                 val t = pt.target ?: continue
                 val r = box(t).apply { inset(3 * d, 3 * d) }
+                if (done(pt)) {
+                    fill.color = 0xCC2E7D32.toInt()
+                    c.drawCircle(r.right - 9 * d, r.top + 9 * d, 9 * d, fill)
+                    text.color = 0xFFFFFFFF.toInt(); text.textSize = 12 * d
+                    c.drawText("✓", r.right - 9 * d, r.top + 13 * d, text)
+                    continue
+                }
                 fill.color = (col and 0x00FFFFFF) or 0x55000000
                 c.drawRoundRect(r, 6 * d, 6 * d, fill)
                 stroke.color = col; stroke.pathEffect = dash; stroke.strokeWidth = 2.5f * d
@@ -101,7 +117,8 @@ class HighlightView(context: Context) : View(context) {
         for (set in sets) {
             val col = setColor(set.number)
             for (pt in set.tiles) {
-                val s = pt.screen ?: continue
+                if (done(pt)) continue
+                val s = src(pt) ?: continue
                 val t = pt.target ?: continue
                 val from = box(s.rect); val to = box(t)
                 arrow(c, from.centerX(), from.centerY(), to.centerX(), to.centerY(), col)
@@ -111,7 +128,8 @@ class HighlightView(context: Context) : View(context) {
         for (set in all) {
             val col = setColor(set.number)
             for (pt in set.tiles) {
-                val s = pt.screen ?: continue
+                if (done(pt)) continue
+                val s = src(pt) ?: continue
                 if (!pt.tile.fromHand && !pt.moved) continue
                 val r = box(s.rect).apply { inset(2 * d, 2 * d) }
                 stroke.color = if (set in sets) col else (col and 0x00FFFFFF) or 0x99000000.toInt()
@@ -184,6 +202,7 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
         a: Advisor.Advice?, status: String?, meldDone: Boolean, labels: Boolean, useJoker: Boolean,
         onMeldToggle: (Boolean) -> Unit, onLabelsToggle: (Boolean) -> Unit, onJokerToggle: (Boolean) -> Unit,
         onClose: () -> Unit, focus: Int? = null, onFocus: (Int) -> Unit = {},
+        progress: Tracker.Progress? = null,
     ) {
         val r = root ?: LinearLayout(ctx).also {
             it.orientation = LinearLayout.VERTICAL
@@ -219,9 +238,9 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
                 12f, 0xFFB0C4E8.toInt(),
             ))
             for (w in a.warnings) r.addView(label("⚠ $w", 12f, 0xFFFF8A80.toInt()))
-            if (a.sets.isNotEmpty()) {
-                // 세트 하나씩 넘겨 보기(판을 덜 가림). 「전체」면 목록 전부.
-                val n = a.sets.size
+            if (a.steps.isNotEmpty()) {
+                // 단계 하나씩(판을 덜 가림). 단계를 끝까지 하면 그때의 판이 유효하다.
+                val n = a.steps.size
                 val nav = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
                 fun navBtn(t: String, onClick: () -> Unit) = label(t, 16f, 0xFFFFFFFF.toInt(), bold = true).apply {
                     setPadding((10 * d).toInt(), (2 * d).toInt(), (10 * d).toInt(), (2 * d).toInt())
@@ -230,18 +249,32 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
                 }
                 val cur = focus ?: 0
                 nav.addView(navBtn("◀") { onFocus(if (cur <= 1) n else cur - 1) })
-                nav.addView(label(if (focus == null) "  전체 $n  " else "  $cur / $n  ", 14f, 0xFFFFFFFF.toInt(), bold = true))
+                nav.addView(label(if (focus == null) "  전체 ${n}단계  " else "  단계 $cur / $n  ", 14f, 0xFFFFFFFF.toInt(), bold = true))
                 nav.addView(navBtn("▶") { onFocus(if (cur >= n) 1 else cur + 1) })
                 nav.addView(View(ctx), LinearLayout.LayoutParams(0, 1, 1f))
                 nav.addView(navBtn(if (focus == null) "하나씩" else "전체") { onFocus(if (focus == null) 1 else 0) })
                 r.addView(nav)
-                val shownSets = if (focus == null) a.sets else a.sets.filter { it.number == focus }
+                val prog = progress
+                val runnable = a.steps.filter { !it.blocked }
+                if (prog != null && runnable.isNotEmpty() && runnable.all { prog.stepDone(it) }) {
+                    r.addView(label("✅ 모든 단계 완료 — 판이 유효해요. 턴을 끝내세요", 13f, 0xFFA5D6A7.toInt(), bold = true))
+                }
+                val step = a.steps.firstOrNull { it.number == focus }
+                if (step != null) r.addView(label(
+                    when {
+                        step.blocked -> "⚠ 판에 빈 자리가 부족해 할 수 없는 단계"
+                        prog != null && prog.stepDone(step) -> "✓ 완료한 단계"
+                        else -> "손패 ${step.handTiles}장 · 이 단계까지 하면 판이 유효해요"
+                    },
+                    12f, if (step.blocked) 0xFFFF8A80.toInt() else 0xFFA5D6A7.toInt(),
+                ))
+                val shownSets = if (focus == null) a.sets else a.sets.filter { it.step == focus }
                 val list = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-                for (s in shownSets) list.addView(setRow(s, focus == s.number).apply { setOnClickListener { onFocus(s.number) } })
+                for (s in shownSets) list.addView(setRow(s, false, prog))
                 val scroll = MaxHeightScroll(ctx, (ctx.resources.displayMetrics.heightPixels * 0.45f).toInt())
                 scroll.addView(list)
                 r.addView(scroll)
-                r.addView(label("화살표 = 놓을 자리", 11f, 0xFF9FB8E8.toInt()))
+                r.addView(label("화살표 = 놓을 자리 · 다 옮기면 자동으로 다음 단계", 11f, 0xFF9FB8E8.toInt()))
             }
         }
 
@@ -252,7 +285,7 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
         r.addView(opts)
     }
 
-    private fun setRow(s: Advisor.PlanSet, focused: Boolean): View {
+    private fun setRow(s: Advisor.PlanSet, focused: Boolean, prog: Tracker.Progress?): View {
         val row = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -271,7 +304,9 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
         row.addView(label(if (s.noRoom) "자리 부족" else s.status.label, 11f, if (s.noRoom) 0xFFFF8A80.toInt() else col).apply { setPadding((4 * d).toInt(), 0, (4 * d).toInt(), 0) },
             LinearLayout.LayoutParams((44 * d).toInt(), -2))
         val chips = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
-        for (pt in s.tiles) chips.addView(chip(pt.tile, pt.tile.fromHand, pt.moved, col))
+        for (pt in s.tiles) chips.addView(chip(pt.tile, pt.tile.fromHand, pt.moved, col).apply {
+            if (prog?.done?.contains(pt) == true) alpha = 0.35f
+        })
         row.addView(chips)
         return row
     }

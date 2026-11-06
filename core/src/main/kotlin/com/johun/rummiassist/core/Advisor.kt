@@ -12,8 +12,18 @@ object Advisor {
     class PlanTile(val tile: SetTile, val screen: DetectedTile?, val target: Rect? = null) {
         val moved get() = !tile.fromHand && target != null
     }
-    /** noRoom: 판에 이 세트를 놓을 빈 자리를 못 찾음(화살표 없음) */
-    class PlanSet(val number: Int, val status: Status, val tiles: List<PlanTile>, val noRoom: Boolean = false)
+    /** noRoom: 판에 이 세트를 놓을 빈 자리를 못 찾음(화살표 없음), step: 속한 단계 번호 */
+    class PlanSet(val number: Int, val status: Status, val tiles: List<PlanTile>, val noRoom: Boolean = false, val step: Int = 1)
+
+    /**
+     * 실행 단계. 1단계부터 순서대로, 각 단계를 끝까지 하면 그 시점의 판이 규칙에 맞는다(valid).
+     * 같은 원래 세트에서 타일을 가져가는 세트들은 한 단계에 묶인다(일부만 하면 원래 세트가 2장 이하로 깨진다).
+     */
+    class Step(val number: Int, val sets: List<PlanSet>, val valid: Boolean) {
+        /** 판에 자리가 없어 실행할 수 없는 단계 */
+        val blocked get() = sets.any { it.noRoom }
+        val handTiles get() = sets.sumOf { s -> s.tiles.count { it.tile.fromHand } }
+    }
 
     class Advice(
         val recognized: Recognizer.Result,
@@ -25,6 +35,7 @@ object Advisor {
         val warnings: List<String>,
         /** 조커를 안 쓰기로 했을 때, 썼다면 얼마나 더 낼 수 있는지 */
         val jokerHint: String? = null,
+        val steps: List<Step> = emptyList(),
     )
 
     /**
@@ -150,14 +161,19 @@ object Advisor {
             if (anchorKinds != null && sameMultiset(anchorKinds, set.map { it.kind })) { keptAnchors += anchor; continue }
             pending += Placement.Pending(plan, anchor)
         }
+        // 같은 원래 판 세트의 타일을 나눠 쓰는 세트들(함께 실행해야 함)
+        fun linked(ps: List<Placement.Pending>): (Set<Int>) -> Set<Int> = { seed ->
+            val groups = components(ps.map { p -> p.tiles.filter { !it.first.fromHand }.mapNotNull { origOf[it.second] }.toSet() })
+            groups.filter { g -> g.any { it in seed } }.flatten().toSet()
+        }
         var all: List<Placement.Pending> = pending
-        var placed = Placement.place(rec, all)
+        var placed = Placement.place(rec, all, linked = linked(all))
         if (placed.placed.any { !it } && canMoveBoard) {
             // 자리가 모자라면 그대로 둘 세트까지 포함해 판 전체를 다시 채워 본다(첫 등록 전엔 판을 못 건드리니 안 함).
             val used = pending.flatMap { p -> p.tiles.map { it.second } }.toHashSet()
             val untouched = orig.indices.filter { a -> orig[a].none { it in used } }
             val withKept = pending + untouched.map { a -> Placement.Pending(keptTiles(orig[a]), a) }
-            val re = Placement.place(rec, withKept, repack = true)
+            val re = Placement.place(rec, withKept, repack = true, linked = linked(withKept))
             if (re.placed.count { !it } < placed.placed.count { !it }) { all = withKept; placed = re; keptAnchors.clear() }
         }
         val out = all.indices.map { i ->
@@ -172,10 +188,104 @@ object Advisor {
             }
             PlanSet(0, status, plan, noRoom = !placed.placed[i])
         }
-        // 화면 표시 순서: 붙이기 → 새 세트 → 재배치 → 자리 이동
-        val ordered = out.sortedBy { it.status.ordinal.let { o -> if (o == 1) -1 else o } }
-            .mapIndexed { i, p -> PlanSet(i + 1, p.status, p.tiles, p.noRoom) }
-        return Advice(rec, ordered, keptAnchors.size, sol.handTiles, sol.handValue, msg, warnings, hint)
+        val steps = makeSteps(rec, orig, normalizeSwaps(rec, out), oneStep = !canMoveBoard)
+        return Advice(rec, steps.flatMap { it.sets }, keptAnchors.size, sol.handTiles, sol.handValue, msg, warnings, hint, steps)
+    }
+
+    /**
+     * 같은 종류 타일끼리 자리 바꾸기 정리: 타일 A 의 목적지에 같은 종류의 다른 움직일 판 타일 B 가 이미 있으면,
+     * B 가 그 자리에 그대로 있고 A 가 B 의 목적지로 가는 것과 같다(같은 타일이니까). 움직임이 줄고 진행 추적이 헷갈리지 않는다.
+     */
+    private fun normalizeSwaps(rec: Recognizer.Result, sets: List<PlanSet>): List<PlanSet> {
+        val (tw, th) = Placement.tileSize(rec)
+        val tiles = sets.map { it.tiles.toMutableList() }
+        fun at(r: Rect, d: DetectedTile) = kotlin.math.abs(r.cx - d.rect.cx) < tw * 0.45 && kotlin.math.abs(r.cy - d.rect.cy) < th * 0.45
+        var changed = true
+        var guard = 0
+        while (changed && guard++ < 200) {
+            changed = false
+            loop@ for (si in tiles.indices) for (ti in tiles[si].indices) {
+                val a = tiles[si][ti]
+                val t = a.target ?: continue
+                for (sj in tiles.indices) for (tj in tiles[sj].indices) {
+                    val b = tiles[sj][tj]
+                    if (b === a || b.tile.fromHand || b.target == null || b.tile.kind != a.tile.kind) continue
+                    val bs = b.screen ?: continue
+                    if (!at(t, bs)) continue
+                    // B 는 제자리(A 의 역할), A 는 B 의 목적지로(B 의 역할). 목적지가 A 의 지금 자리면 그대로 있으면 됨.
+                    val aStays = a.screen != null && !a.tile.fromHand && at(b.target, a.screen)
+                    tiles[si][ti] = PlanTile(a.tile, bs, null)
+                    tiles[sj][tj] = PlanTile(b.tile.copy(fromHand = a.tile.fromHand), a.screen, if (aStays) null else b.target)
+                    tiles[si][ti] = PlanTile(a.tile.copy(fromHand = false), bs, null)
+                    changed = true
+                    break@loop
+                }
+            }
+        }
+        return sets.mapIndexed { i, p -> PlanSet(p.number, p.status, tiles[i], p.noRoom, p.step) }
+    }
+
+    /** 원래 판 세트 번호를 공유하는 것끼리 묶은 연결 요소(세트 번호 목록들) */
+    private fun components(origSetsOf: List<Set<Int>>): List<List<Int>> {
+        val parent = IntArray(origSetsOf.size) { it }
+        fun find(x: Int): Int = if (parent[x] == x) x else find(parent[x]).also { parent[x] = it }
+        val owner = HashMap<Int, Int>()
+        origSetsOf.forEachIndexed { i, os -> for (o in os) { val p = owner[o]; if (p == null) owner[o] = i else parent[find(i)] = find(p) } }
+        return origSetsOf.indices.groupBy { find(it) }.values.toList()
+    }
+
+    /**
+     * 세트들을 실행 단계로 나눈다.
+     * 1) 같은 원래 판 세트의 타일을 쓰는 세트끼리 묶음(합집합 찾기).
+     * 2) 남은 묶음 중, 지금까지 한 단계 + 이 묶음을 실행한 판이 유효한 것을 손패를 많이 내는 순으로 고른다.
+     *    하나로 안 되면 둘씩, 그래도 안 되면 남은 것 전부를 한 단계로.
+     * oneStep(첫 등록): 30점은 한 턴에 함께 내야 하므로 한 단계.
+     */
+    private fun makeSteps(rec: Recognizer.Result, orig: List<List<DetectedTile>>, sets: List<PlanSet>, oneStep: Boolean): List<Step> {
+        if (sets.isEmpty()) return emptyList()
+        val origOf = HashMap<DetectedTile, Int>()
+        orig.forEachIndexed { i, s -> s.forEach { origOf[it] = i } }
+        // 자리가 없는 세트가 낀 묶음은 끝까지 실행할 수 없으므로(원래 세트가 깨진 채 남음) 통째로 맨 뒤 '자리 부족' 단계로
+        val all = if (oneStep) listOf(sets.indices.toList())
+        else components(sets.map { s -> s.tiles.filter { !it.tile.fromHand }.mapNotNull { it.screen?.let { d -> origOf[d] } }.toSet() })
+        val blocked = all.filter { c -> c.any { sets[it].noRoom } }
+        var comps: MutableList<List<Int>> = all.filter { c -> c.none { sets[it].noRoom } }.toMutableList()
+        val (tw, th) = Placement.tileSize(rec)
+        val inPlan = sets.flatMap { s -> s.tiles.mapNotNull { it.screen } }.toHashSet()
+        val blockedSet = blocked.flatten().toSet()
+        fun valid(done: Set<Int>): Boolean {
+            val ps = ArrayList<BoardCheck.P>()
+            for (t in rec.board) if (t !in inPlan) ps += BoardCheck.P(t.kind, t.rect.cx, t.rect.cy)
+            sets.forEachIndexed { i, s ->
+                for (pt in s.tiles) {
+                    val r = if (i in done) pt.target ?: pt.screen?.rect else if (pt.tile.fromHand) null else pt.screen?.rect
+                    r?.let { ps += BoardCheck.P(pt.tile.kind, it.cx, it.cy) }
+                }
+            }
+            return BoardCheck.problem(ps, tw, th) == null
+        }
+        fun hand(c: List<Int>) = c.sumOf { i -> sets[i].tiles.count { it.tile.fromHand } }
+        val order = ArrayList<Pair<List<Int>, Boolean>>()
+        val done = HashSet<Int>()
+        while (comps.isNotEmpty()) {
+            comps.sortByDescending { hand(it) }
+            var pick: List<List<Int>>? = comps.firstOrNull { valid(done + it) }?.let { listOf(it) }
+            if (pick == null) pick = comps.indices.flatMap { a -> (a + 1 until comps.size).map { b -> listOf(comps[a], comps[b]) } }
+                .firstOrNull { (a, b) -> valid(done + a + b) }
+            val chosen = pick ?: comps.toList()
+            val merged = chosen.flatten()
+            done += merged
+            order += merged to valid(done)
+            comps = comps.filter { c -> chosen.none { it === c } }.toMutableList()
+        }
+        val rest = blocked.flatten()
+        if (rest.isNotEmpty()) order += rest to false
+        var n = 0
+        return order.mapIndexed { k, (idx, ok) ->
+            val ss = idx.sortedBy { sets[it].status.ordinal.let { o -> if (o == 1) -1 else o } }
+                .map { i -> val p = sets[i]; PlanSet(++n, p.status, p.tiles, p.noRoom, k + 1) }
+            Step(k + 1, ss, ok)
+        }
     }
 
     /** 그대로 둘 판 세트를 (대신하는 숫자를 채운) SetTile 과 화면 타일 쌍으로 */

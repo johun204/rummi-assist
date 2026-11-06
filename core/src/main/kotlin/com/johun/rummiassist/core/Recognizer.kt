@@ -54,11 +54,18 @@ class Recognizer(private val templates: List<Template> = Templates.all) {
             val (label, dist) = classify(g) ?: continue
             // 작은 글자는 격자 오차가 커서 허용치를 조금 넓힌다.
             if (dist > MAX_DIST + max(0, 28 - g.rect.height) * 0.004) continue
+            // 숫자는 타일 면 한가운데 있어 사방 0.3배 높이까지 타일 면이다(글자 속 구멍 같은 잡티 제외).
+            if (label != "J" && litFraction(f, g.rect, (g.rect.height * 0.3).roundToInt()) < 0.75) continue
             cands += Cand(g, if (label == "J") TileKind.JOKER else TileKind.of(g.color, label.toInt()), dist)
         }
         val tiles = ArrayList<DetectedTile>()
+        val boardMed = median(cands.filter { it.g.rect.bottom <= rackTop && !it.kind.isJoker }.map { it.g.rect.height })
         for (inHand in listOf(false, true)) {
             var region = cands.filter { (it.g.rect.bottom > rackTop) == inHand }
+            // 손패가 거의 없으면 손패끼리 크기 비교가 안 돼 이름표 숫자 같은 잡티가 남는다:
+            // 이때는 판 글자의 60% 이상인 것만(실제 손패 글자는 판 글자의 0.68배 이상).
+            if (inHand && boardMed > 0 && region.count { !it.kind.isJoker } <= 2)
+                region = region.filter { it.g.rect.height / (if (it.kind.isJoker) JOKER_H else 1.0) >= boardMed * 0.6 }
             // 같은 구역 타일은 크기가 같다: 숫자 글자 높이 중앙값에서 벗어난 것은 잡티.
             val digitH = median(region.filter { !it.kind.isJoker }.map { it.g.rect.height })
             if (digitH > 0) region = region.filter {
@@ -245,6 +252,17 @@ class Recognizer(private val templates: List<Template> = Templates.all) {
         }
         if (lit < tot * 0.8) return null
         return intArrayOf((r / lit).toInt(), (g / lit).toInt(), (b / lit).toInt())
+    }
+
+    /** 사각형 둘레 m 픽셀 띠 중 타일 면 픽셀 비율 */
+    private fun litFraction(f: Frame, r: Rect, m: Int): Double {
+        var tot = 0; var lit = 0
+        for (y in r.top - m until r.bottom + m) for (x in r.left - m until r.right + m) {
+            if (x in r.left until r.right && y in r.top until r.bottom) continue
+            tot++
+            if (f.lit(x, y)) lit++
+        }
+        return if (tot == 0) 0.0 else lit.toDouble() / tot
     }
 
     /**

@@ -108,7 +108,10 @@ class SyntheticTest {
         }
     }
 
-    private class Scene(val img: Img, val boardSets: List<List<TileKind>>, val hand: List<TileKind>, val desc: String)
+    private class Scene(
+        val img: Img, val boardSets: List<List<TileKind>>, val hand: List<TileKind>, val desc: String,
+        val wb: Int = 0, val f: Double = 1.0,
+    )
 
     /** 실제 덱(색 4 x 숫자 13 x 2장 + 조커 2)에서 뽑는다. */
     private class Deck(val rnd: Random) {
@@ -193,7 +196,7 @@ class SyntheticTest {
         }
         val f = listOf(1.0, 1.0, 0.8, 0.65).random(rnd).let { if (wb * it < 30) 1.0 else it }
         val img = if (f == 1.0) scene else scaled(scene, f)
-        return Scene(img, sets, hand, "seed=$seed board W=$wb x${sets.sumOf { it.size }} hand W=$wh x$n scale=$f")
+        return Scene(img, sets, hand, "seed=$seed board W=$wb x${sets.sumOf { it.size }} hand W=$wh x$n scale=$f", wb, f)
     }
 
     @Test fun manySizesAndLayouts() {
@@ -222,7 +225,7 @@ class SyntheticTest {
     /** 다양한 크기/배치의 화면에서 제안대로 옮긴 결과가 항상 유효한 판인지. */
     @Test fun movesProduceValidBoard() {
         val rec = Recognizer()
-        var bad = 0; var checked = 0; var noRoom = 0; var total = 0
+        var bad = 0; var checked = 0; var noRoom = 0; var total = 0; var stepsN = 0; var plans = 0
         val roomLog = ArrayList<Int>()
         val n = (System.getenv("SYN_N") ?: "120").toInt()
         for (seed in 1..n) {
@@ -233,6 +236,7 @@ class SyntheticTest {
                 if (a.sets.isEmpty()) continue
                 checked++
                 noRoom += a.sets.count { it.noRoom }; total += a.sets.size
+                stepsN += a.steps.count { !it.sets.any { s -> s.noRoom } }; plans++
                 if (a.sets.any { it.noRoom }) {
                     // 판 칸 수 대비 완성 판 타일 수(세트 사이 한 칸 포함)
                     val bw = (r.board.firstOrNull() ?: r.hand.first()).rect
@@ -245,8 +249,60 @@ class SyntheticTest {
                 layoutProblem(a)?.let { bad++; println("LAYOUT seed=$seed meld=$meld joker=$joker: $it") }
             }
         }
+        println("steps: 계획당 평균 ${"%.2f".format(stepsN.toDouble() / maxOf(1, plans))} 단계")
         println("layout: ${checked - bad}/$checked ok, 자리 없음 세트 $noRoom/$total, 그때 필요칸/전체칸(%) ${roomLog.sorted()}")
         assertTrue("$bad/$checked layouts invalid", bad == 0)
+    }
+
+    /**
+     * 끝에서 끝까지: 1단계대로 실제로 타일을 옮긴 화면을 만들어 다시 인식하면
+     * (1) 화면에서 읽은 판 세트가 모두 유효하고 (2) 진행 추적이 1단계를 완료로 보고 (3) 계획 이탈로 보지 않아야 한다.
+     */
+    @Test fun executingStepKeepsBoardValid() {
+        val rec = Recognizer()
+        var tried = 0; var bad = 0
+        val n = (System.getenv("SYN_N") ?: "120").toInt()
+        for (seed in 1..n) {
+            val sc = makeScene(seed)
+            if (sc.f != 1.0) continue
+            val r = rec.recognize(sc.img.px, sc.img.w, sc.img.h)
+            val a = com.johun.rummiassist.core.Advisor.advise(r, true, true)
+            val step = a.steps.firstOrNull() ?: continue
+            if (r.board.isEmpty()) continue
+            if (step.blocked) continue
+            if (com.johun.rummiassist.core.BoardCheck.problem(r.board.map { com.johun.rummiassist.core.BoardCheck.P(it.kind, it.rect.cx, it.rect.cy) },
+                    r.board.first().rect.width, r.board.first().rect.height) != null) continue
+            tried++
+            val img = Img(sc.img.px.clone(), sc.img.w, sc.img.h)
+            val moving = step.sets.flatMap { st -> st.tiles.filter { it.target != null } }
+            for (pt in moving) { // 원래 자리 지우기
+                val sr = pt.screen!!.rect
+                val fillC = if (pt.tile.fromHand) 0xFFDCAF82.toInt() else img.px[(sr.top - 4).coerceAtLeast(0) * img.w + 1695]
+                for (y in maxOf(0, sr.top - 2) until minOf(img.h, sr.bottom + 3)) for (x in maxOf(0, sr.left - 2) until minOf(img.w, sr.right + 3))
+                    img.px[y * img.w + x] = if (pt.tile.fromHand) fillC else img.px[y * img.w + 1695]
+            }
+            for (pt in moving) {
+                val t = pt.target!!
+                val h = (sc.wb * 1.48).roundToInt()
+                drawTile(img, t.cx - sc.wb / 2, t.cy - h / 2, sc.wb, pt.tile.kind, true)
+            }
+            val r2 = rec.recognize(img.px, img.w, img.h)
+            val invalid = r2.boardSets.filter { !com.johun.rummiassist.core.Solver.isValidSet(it.map { t -> t.kind }) }
+            val prog = com.johun.rummiassist.core.Tracker.track(a, r2)
+            val same = com.johun.rummiassist.core.Tracker.sameTotals(r, r2)
+            val ok = invalid.isEmpty() && moving.all { it in prog.done } && !prog.deviated && same
+            if (!ok) {
+                bad++
+                if (!same) {
+                    val c1 = r.tiles.groupingBy { it.kind }.eachCount(); val c2 = r2.tiles.groupingBy { it.kind }.eachCount()
+                    println("  diff: " + (c1.keys + c2.keys).filter { c1[it] != c2[it] }.joinToString { "$it ${c1[it]}→${c2[it]}" } + " hand ${r.hand.size}→${r2.hand.size} board ${r.board.size}→${r2.board.size}")
+                }
+                println("EXEC seed=$seed invalid=${invalid.map { s -> s.map { it.kind } }} done=${prog.done.size}/${moving.size} deviated=${prog.deviated} same=$same")
+                System.getenv("SYN_SAVE")?.let { saveImg(img, "$it/exec$seed.png") }
+            }
+        }
+        println("execute step1: ${tried - bad}/$tried ok")
+        assertTrue("$bad/$tried executions failed", bad == 0)
     }
 
     companion object {

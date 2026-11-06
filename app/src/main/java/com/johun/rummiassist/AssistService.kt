@@ -23,6 +23,7 @@ import android.widget.TextView
 import android.widget.Toast
 import com.johun.rummiassist.core.Advisor
 import com.johun.rummiassist.core.Recognizer
+import com.johun.rummiassist.core.Tracker
 import java.util.concurrent.Executors
 import kotlin.math.abs
 
@@ -59,8 +60,17 @@ class AssistService : AccessibilityService() {
     private var shown: Frame? = null
     /** 첫 등록 전으로 바뀐 시점의 손패/판 장수: 여기서 손패가 3장 이상 판으로 나가면 등록한 것으로 본다. */
     private var meldBase: Pair<Int, Int>? = null
-    /** 화살표를 그릴 세트(null = 전부). 새 화면마다 1번 세트부터. */
+    /** 화살표를 그릴 단계(null = 전부) */
     private var focus: Int? = 1
+    /** 사용자가 ◀▶ 로 고른 단계면 true (진행이 생기면 다시 자동) */
+    private var manualFocus = false
+
+    /**
+     * 이번 턴의 고정 계획. 판+손패 구성이 같은 동안(타일을 옮기는 중)은 다시 계산하지 않고 진행만 따라간다
+     * → 옮기는 도중의 어중간한 판으로 새 계획을 세워 계획이 계속 바뀌는 일이 없다.
+     */
+    private var plan: Advisor.Advice? = null
+    private var lastDone = -1
 
     /** 인식 결과 + 게임 창의 화면상 위치 */
     private class Frame(val rec: Recognizer.Result, val x: Int, val y: Int)
@@ -181,6 +191,7 @@ class AssistService : AccessibilityService() {
 
     private fun stopLive() {
         live = false
+        plan = null
         main.removeCallbacks(tick)
         updateBubble()
         clearResults()
@@ -277,7 +288,6 @@ class AssistService : AccessibilityService() {
                 shownSig = sig
                 updateMeld(f)
                 shown = f
-                focus = 1
                 render()
             } else if (shownSig != null) {
                 // 화면이 바뀜: 옛 제안은 바로 지운다.
@@ -310,19 +320,35 @@ class AssistService : AccessibilityService() {
 
     private fun render() {
         val f = shown ?: return
-        val advice = try {
-            Advisor.advise(f.rec, meldDone, useJoker)
-        } catch (t: Throwable) {
-            return showStatus("계산 오류: ${t.message}")
+        var advice = plan
+        var prog: Tracker.Progress? = null
+        if (advice != null && Tracker.sameTotals(advice.recognized, f.rec) && sameTileSize(advice.recognized, f.rec)) {
+            prog = Tracker.track(advice, f.rec)
+            if (prog.deviated) { advice = null; prog = null } // 계획과 다르게 옮김 → 지금 판에서 다시
+        } else advice = null
+        if (advice == null) {
+            advice = try {
+                Advisor.advise(f.rec, meldDone, useJoker)
+            } catch (t: Throwable) {
+                return showStatus("계산 오류: ${t.message}")
+            }
+            plan = advice
+            prog = Tracker.track(advice, f.rec)
+            focus = 1; manualFocus = false; lastDone = -1
         }
+        // 진행이 생기면 아직 안 끝난 첫 단계로 자동 이동
+        val doneNow = prog!!.done.size
+        if (doneNow != lastDone) { manualFocus = false; lastDone = doneNow }
+        if (!manualFocus) focus = advice.steps.firstOrNull { !it.blocked && !prog.stepDone(it) }?.number
+            ?: advice.steps.firstOrNull()?.number
         val hv = highlight ?: HighlightView(this).also {
             wm.addView(it, overlayParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT, touchable = false))
             highlight = it
             panel?.bringToFront()
         }
-        val fNow = focus?.takeIf { n -> advice.sets.any { it.number == n } }
-        hv.setAdvice(advice, showLabels, f.x, f.y, fNow)
-        showPanel(advice, null, fNow)
+        val fNow = focus?.takeIf { n -> advice.steps.any { it.number == n } }
+        hv.setAdvice(advice, showLabels, f.x, f.y, fNow, prog)
+        showPanel(advice, null, fNow, prog)
     }
 
     private fun showStatus(msg: String) {
@@ -330,17 +356,24 @@ class AssistService : AccessibilityService() {
         showPanel(null, msg)
     }
 
-    private fun showPanel(advice: Advisor.Advice?, status: String?, shownFocus: Int? = null) {
+    private fun sameTileSize(a: Recognizer.Result, b: Recognizer.Result): Boolean {
+        val wa = a.board.firstOrNull()?.rect?.width ?: return true
+        val wb = b.board.firstOrNull()?.rect?.width ?: return true
+        return kotlin.math.abs(wa - wb) <= wa * 0.1 // 판 타일이 줄어들면(게임이 재배치) 자리 계산을 다시
+    }
+
+    private fun showPanel(advice: Advisor.Advice?, status: String?, shownFocus: Int? = null, prog: Tracker.Progress? = null) {
         val p = panel ?: ResultPanel(this, wm).also { panel = it }
         p.show(
             advice, status, meldDone, showLabels, useJoker,
-            onMeldToggle = { meldDone = it; meldBase = null; render() },
+            onMeldToggle = { meldDone = it; meldBase = null; plan = null; render() },
             onLabelsToggle = { showLabels = it; render() },
-            onJokerToggle = { useJoker = it; render() },
+            onJokerToggle = { useJoker = it; plan = null; render() },
             onClose = { stopLive() },
             focus = shownFocus,
-            // n = 세트 번호, 0 = 전체
-            onFocus = { n -> focus = if (n == 0) null else n; render() },
+            // n = 단계 번호, 0 = 전체
+            onFocus = { n -> focus = if (n == 0) null else n; manualFocus = true; render() },
+            progress = prog,
         )
         bringBubbleToFront()
     }
