@@ -171,7 +171,10 @@ internal object Placement {
                     }
                     for ((k, v) in votes) cands += Triple(k, s.tiles, v)
                 }
-                val inPlace = cands.sortedByDescending { it.third }.firstOrNull { (sp, _, _) -> fits(sp.first, sp.second, n, i, avoidNow = false) }
+                // 순서가 실행마다 달라지지 않게: 제자리 타일 수 → 줄 위치 → 칸 순으로 고정
+                val inPlace = cands.sortedWith(compareByDescending<Triple<Pair<Row, Int>, List<Pair<SetTile, DetectedTile>>, Int>> { it.third }
+                    .thenBy { it.first.first.y }.thenBy { it.first.second })
+                    .firstOrNull { (sp, _, _) -> fits(sp.first, sp.second, n, i, avoidNow = false) }
                 var tiles = inPlace?.second ?: s.tiles
                 val spot = inPlace?.first
                     ?: rows.firstNotNullOfOrNull { r -> colRange(r).firstOrNull { fits(r, it, n, i, true) }?.let { r to it } }
@@ -194,7 +197,11 @@ internal object Placement {
             idx.sortedByDescending { sets[it].tiles.size },
             idx.sortedWith(compareByDescending<Int> { sets[it].tiles.count { p -> p.first.fromHand } }.thenByDescending { sets[it].tiles.size }),
             idx.sortedBy { stays(it) },
-        ).distinct()
+        ).let { base ->
+            // 몇 가지 정해진 순서 + 고정 시드 무작위 순서(실행마다 같은 결과)
+            val rnd = kotlin.random.Random(42)
+            base + List(if (sets.size > 1) 24 else 0) { idx.shuffled(rnd) }
+        }.distinct()
         val best = orders.map { attempt(it) }.minWith(compareBy<Attempt> { it.unplaced }.thenBy { it.moves })
         val placed = best.placed
         val finalTiles = best.tiles

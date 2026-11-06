@@ -101,7 +101,23 @@ object Advisor {
             if (j.handTiles > sol.handTiles) "조커를 쓰면 ${j.handTiles - sol.handTiles}장 더 낼 수 있어요" else null
         } else null
         if (sol.handTiles == 0) return result(null, "낼 수 있는 조합이 없어요 — 타일을 뽑으세요", hint)
-        return result(preserve(sol, validOrig), "최대 ${sol.handTiles}장 내기 (합 ${sol.handValue})", hint)
+        val best = result(preserve(sol, validOrig), "최대 ${sol.handTiles}장 내기 (합 ${sol.handValue})", hint)
+        if (best.steps.none { it.blocked }) return best
+        // 최적 배치가 판에 다 들어가지 않으면, 덜 내는 다른 배치(조커 빼기, 손패 한 종류씩 빼기)가
+        // 실제로 '할 수 있는' 장수가 더 많은지 비교해 고른다.
+        fun doable(a: Advice) = a.steps.filter { !it.blocked }.sumOf { it.handTiles }
+        var pick = best
+        val tries = ArrayList<Pair<Array<IntArray>, Int>>()
+        if (hj > 0) tries += hc to 0
+        for (c in 0..3) for (v in 1..13) if (hc[c][v] > 0) tries += Array(4) { hc[it].clone() }.also { it[c][v]-- } to hj
+        for ((h2, j2) in tries) {
+            if (doable(pick) >= sol.handTiles) break
+            val alt = Solver.solve(bc, h2, bj, j2) ?: continue
+            if (alt.handTiles <= doable(pick)) continue
+            val a2 = result(preserve(alt, validOrig), "${alt.handTiles}장 내기 (합 ${alt.handValue}) — 최대 ${sol.handTiles}장은 판에 자리가 부족", hint)
+            if (doable(a2) > doable(pick)) pick = a2
+        }
+        return pick
     }
 
     /** 같은 손패 사용량을 유지하면서 원래 판 세트를 최대한 그대로 남기도록 다시 나눈다. */
@@ -305,7 +321,9 @@ object Advisor {
             }
             k++
         }
-        val rest = blocked.flatten()
+        var rest = blocked.flatten()
+        // 손패를 내는 단계가 하나도 없으면(전부 자리 부족) 정리만 하는 단계도 혼자 할 수 없다
+        if (rest.isNotEmpty() && order.isNotEmpty() && order.all { hand(it.first) == 0 }) { rest = order.flatMap { it.first } + rest; order.clear() }
         if (rest.isNotEmpty()) order += rest to false
         var n = 0
         return order.mapIndexed { k, (idx, ok) ->
