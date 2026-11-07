@@ -65,11 +65,14 @@ class HighlightView(context: Context) : View(context) {
     private var ox = 0f
     private var oy = 0f
 
+    /** 인식 표시는 계획 당시가 아니라 지금 화면의 인식 결과로 */
+    private var current: com.johun.rummiassist.core.Recognizer.Result? = null
+
     fun setAdvice(
         a: Advisor.Advice?, showLabels: Boolean, windowX: Int = 0, windowY: Int = 0,
-        focusStep: Int? = null, prog: Tracker.Progress? = null,
+        focusStep: Int? = null, prog: Tracker.Progress? = null, now: com.johun.rummiassist.core.Recognizer.Result? = null,
     ) {
-        advice = a; labels = showLabels; winX = windowX; winY = windowY; focus = focusStep; progress = prog; invalidate()
+        advice = a; labels = showLabels; winX = windowX; winY = windowY; focus = focusStep; progress = prog; current = now; invalidate()
     }
 
     /** 아직 안 옮긴 타일의 지금 위치 */
@@ -83,7 +86,7 @@ class HighlightView(context: Context) : View(context) {
         ox = (loc[0] - winX).toFloat(); oy = (loc[1] - winY).toFloat()
         if (labels) {
             text.textSize = 12 * d
-            for (t in a.recognized.tiles) {
+            for (t in (current ?: a.recognized).tiles) {
                 val r = t.rect
                 val bx = (r.left + r.right) / 2f - ox
                 val by = r.top - oy + 2 * d
@@ -93,9 +96,17 @@ class HighlightView(context: Context) : View(context) {
                 c.drawText(t.kind.toString(), bx, by + 12 * d, text)
             }
         }
-        // 이미 옮긴 자리 ✓
-        val shownSteps = if (focus == null) a.steps else a.steps.filter { it.number == focus }
-        for (st in shownSteps) for (pt in st.moves) if (done(pt)) check(c, box(pt.target!!))
+        // ✓ 는 세트가 '다 완성됐을 때'만: 그 세트 자리 전체를 초록 테두리로 감싼다(한 장만 옮겨진 건 완성이 아님)
+        for (set in a.sets) {
+            val moving = set.tiles.filter { it.target != null }
+            if (moving.isEmpty() || !moving.all { done(it) }) continue
+            val rects = set.tiles.mapNotNull { pt -> pt.target ?: pt.screen?.rect }.map { box(it) }
+            val u = RectF(rects.minOf { it.left }, rects.minOf { it.top }, rects.maxOf { it.right }, rects.maxOf { it.bottom })
+            u.inset(-3 * d, -3 * d)
+            stroke.color = 0xFF43A047.toInt(); stroke.pathEffect = null; stroke.strokeWidth = 4 * d
+            c.drawRoundRect(u, 8 * d, 8 * d, stroke)
+            check(c, RectF(u))
+        }
 
         if (focus == null) {
             for (set in a.sets) {

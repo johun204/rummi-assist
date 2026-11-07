@@ -492,7 +492,7 @@ class AssistService : AccessibilityService() {
             panel?.bringToFront()
         }
         val fNow = focus?.takeIf { n -> advice.steps.any { it.number == n } }
-        hv.setAdvice(advice, showLabels, f.x, f.y, fNow, prog)
+        hv.setAdvice(advice, showLabels, f.x, f.y, fNow, prog, f.rec)
         showPanel(advice, null, fNow, prog)
     }
 

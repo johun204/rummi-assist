@@ -38,6 +38,23 @@ fun layoutProblem(a: Advisor.Advice): String? {
             pos[src] = t
         }
     }
+    // 만드는 순서: 세트는 하나씩 끝내고(동시에 만드는 세트 1개 이하), 만드는 중인 세트엔 빈틈이 없어야 한다
+    run {
+        val placed = HashSet<Advisor.PlanTile>()
+        val setOf = a.sets.flatMap { s -> s.tiles.map { it to s } }.toMap()
+        for (m in a.moves) {
+            if (m.isPark) continue
+            val s = setOf.getValue(m)
+            val before = s.tiles.map { it.target == null || it in placed }
+            val k = s.tiles.indexOf(m)
+            // 새로 놓는 타일은 그 세트의 이미 있는 타일 바로 옆이어야 한다(세트의 첫 타일이면 예외) → 따로 떨어진 타일 없음
+            if (before.any { it } && !((k > 0 && before[k - 1]) || (k < before.size - 1 && before[k + 1])))
+                return "세트 #${s.number} 에 떨어진 자리로 놓음: ${s.tiles.mapIndexed { i, t -> if (before[i]) t.tile.toString() else if (i == k) "[${t.tile}]" else "_" }}"
+            placed += m
+            val building = a.sets.count { st -> st.tiles.any { it.target != null && it in placed } && st.tiles.any { it.target != null && it !in placed } }
+            if (building > 1) return "동시에 만드는 세트 ${building}개"
+        }
+    }
     val boardValidAtStart = BoardCheck.problem(rec.board.map { BoardCheck.P(it.kind, it.rect.cx, it.rect.cy) }, tw, th) == null
     for (upto in 1..a.steps.size) {
         val step = a.steps[upto - 1]

@@ -399,41 +399,73 @@ object Advisor {
         // 손패를 내는 단계가 하나도 없으면(전부 자리 부족) 정리만 하는 단계도 혼자 할 수 없다
         if (rest.isNotEmpty() && order.isNotEmpty() && order.all { hand(it.first) == 0 }) { rest = order.flatMap { it.first } + rest; order.clear() }
         if (rest.isNotEmpty()) order += rest to false
-        // 단계 안의 이동 순서: 이동 하나마다, 그 이동 뒤 판의 무효 타일 수가 가장 적어지는 것부터
-        // (같으면 방금 옮기던 세트를 이어서 → 세트를 하나씩 완성). 중간에 시간이 끝나도 판이 최대한 유효하다.
+        // 단계 안의 이동 순서: '세트를 하나씩 끝내기'.
+        // 1) 놓을 칸이 모두 비어 있는(또는 자동 축소) 세트 중, 그 세트를 다 만든 뒤 판의 무효 타일이 가장 적은 것부터.
+        // 2) 세트 안에서는 이미 있는 타일(남는 판 타일) 옆부터 차례로 이어 붙인다 → 만드는 중에도 빈틈이 없다.
+        //    같은 조건이면 손패를 먼저(판의 다른 세트를 늦게 깨도록).
+        // 3) 모든 세트의 자리가 서로 막혀 있으면(순환) 막고 있는 타일 하나를 빈 칸에 잠시 내려놓는다.
         val applied = HashSet<PlanTile>()
+        fun near(a: Rect, x: Int, y: Int) = kotlin.math.abs(a.cx - x) < tw * 0.8 && kotlin.math.abs(a.cy - y) < th * 0.8
         val stepMoves = order.map { (idx, ok) ->
             if (!ok && idx.any { sets[it].noRoom }) return@map emptyList<PlanTile>()
-            val left = movesOf(idx).toMutableList()
             val seq = ArrayList<PlanTile>()
-            var lastSet: PlanSet? = null
-            while (left.isNotEmpty()) {
-                // 놓을 칸에 아직 안 옮긴 타일이 있으면 그 타일을 먼저 옮긴 뒤에(덮어 놓기 금지)
+            val pending = idx.filter { i -> sets[i].tiles.any { it.target != null } }.toMutableList()
+            var guard = 0
+            while (pending.isNotEmpty() && guard++ < 200) {
                 val cur = positions(applied)
-                fun blockedNow(m: PlanTile): Boolean {
-                    val t = m.target!!
-                    return cur.any { p -> kotlin.math.abs(p.cx - t.cx) < tw * 0.8 && kotlin.math.abs(p.cy - t.cy) < th * 0.8 }
-                }
-                val relaxedMove = { m: PlanTile -> sets.first { m in it.tiles }.relaxed }
-                val eligible = left.filter { relaxedMove(it) || !blockedNow(it) }
-                val parkable = left.filter { it !in parked && !it.tile.fromHand && !relaxedMove(it) }
-                if (eligible.isEmpty() && parkable.isNotEmpty()) {
-                    // 서로의 자리로 가야 해서(순환) 아무것도 먼저 못 옮김 → 하나를 빈 칸에 잠시 내려놓는다(타일마다 한 번만)
-                    val m = parkable.minBy { badness(applied + it) }
-                    fun near(a: Rect, b: Rect) = kotlin.math.abs(a.cx - b.cx) < tw * 0.8 && kotlin.math.abs(a.cy - b.cy) < th * 0.8
-                    val p = parking.firstOrNull { c -> cur.none { kotlin.math.abs(it.cx - c.cx) < tw * 0.8 && kotlin.math.abs(it.cy - c.cy) < th * 0.8 } && left.none { near(it.target!!, c) } }
-                    if (p != null) {
-                        val leg = PlanTile(m.tile, m.screen, p, parkFor = m)
-                        m.via = p
-                        seq += leg; parked += m
-                        continue
+                // 세트 si 의 아직 안 놓은 목적지를 막고 있는 다른 세트의 움직일 타일들
+                fun blockers(si: Int): List<PlanTile> {
+                    if (sets[si].relaxed) return emptyList()
+                    val mine = sets[si].tiles.mapNotNull { it.screen }.toSet()
+                    val out = ArrayList<PlanTile>()
+                    for (m in sets[si].tiles) {
+                        val t = m.target ?: continue
+                        if (m in applied) continue
+                        if (cur.none { near(t, it.cx, it.cy) }) continue
+                        // 그 칸에 있는 타일이 같은 세트 것(곧 옮길)이면 괜찮다. 아니면 그 타일의 이동을 찾는다.
+                        val occ = sets.flatMap { it.tiles }.firstOrNull { o ->
+                            o !in applied && o.target != null && !o.tile.fromHand && o.screen?.rect?.let { r -> near(t, r.cx, r.cy) } == true ||
+                                o in parked && o.via?.let { v -> near(t, v.cx, v.cy) } == true
+                        }
+                        if (occ == null || occ.screen in mine) continue
+                        out += occ
                     }
+                    return out
                 }
-                val m = eligible.ifEmpty { left }.minWith(compareBy<PlanTile> { badness(applied + it) }
-                    .thenBy { if (lastSet != null && it in lastSet!!.tiles) 0 else 1 }
-                    .thenBy { if (it.tile.fromHand) 1 else 0 })
-                left.remove(m); seq += m; applied += m
-                lastSet = sets.first { m in it.tiles }
+                var candidates = pending.filter { blockers(it).isEmpty() }
+                if (candidates.isEmpty()) {
+                    // 순환: 막는 타일이 가장 적은 세트를 고르고, 막는 타일을 빈 칸에 잠시 내려놓는다
+                    val si = pending.minBy { blockers(it).size }
+                    var ok2 = true
+                    for (b in blockers(si)) {
+                        if (b in parked) { ok2 = false; break }
+                        val now = positions(applied)
+                        val pTarget = parking.firstOrNull { c ->
+                            now.none { near(c, it.cx, it.cy) } && sets.none { st -> st.tiles.any { o -> o.target?.let { near(it, c.cx, c.cy) } == true } }
+                        }
+                        if (pTarget == null) { ok2 = false; break }
+                        seq += PlanTile(b.tile, b.screen, pTarget, parkFor = b)
+                        b.via = pTarget; parked += b
+                    }
+                    candidates = listOf(si)
+                    if (!ok2) candidates = listOf(si) // 내려놓을 칸이 없으면 그냥 진행(드묾)
+                }
+                val si = candidates.minWith(
+                    compareBy<Int> { i -> badness(applied + sets[i].tiles.filter { it.target != null }) }
+                        .thenByDescending { i -> sets[i].tiles.count { it.tile.fromHand } }
+                        .thenBy { i -> sets[i].tiles.count { it.target != null } },
+                )
+                // 세트 안: 이미 있는 칸(남는 타일·놓은 타일) 옆부터, 없으면 왼쪽 끝부터
+                val tiles = sets[si].tiles
+                val present = BooleanArray(tiles.size) { k -> tiles[k].target == null || tiles[k] in applied }
+                val left = tiles.indices.filter { !present[it] }.toMutableList()
+                while (left.isNotEmpty()) {
+                    val adj = left.filter { k -> (k > 0 && present[k - 1]) || (k < tiles.size - 1 && present[k + 1]) }
+                    val k = (adj.ifEmpty { listOf(left.min()) }).minWith(compareBy<Int> { if (tiles[it].tile.fromHand) 0 else 1 }.thenBy { it })
+                    left.remove(k); present[k] = true
+                    seq += tiles[k]; applied += tiles[k]
+                }
+                pending.remove(si)
             }
             seq
         }
