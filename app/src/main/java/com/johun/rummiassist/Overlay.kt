@@ -68,11 +68,16 @@ class HighlightView(context: Context) : View(context) {
     /** 인식 표시는 계획 당시가 아니라 지금 화면의 인식 결과로 */
     private var current: com.johun.rummiassist.core.Recognizer.Result? = null
 
+    /** 뽑기를 권하는(시간 안에 못 끝내는) 계획은 사용자가 「그래도 보기」를 눌렀을 때만 화살표를 그린다 */
+    private var showOverTime = false
+
     fun setAdvice(
         a: Advisor.Advice?, showLabels: Boolean, windowX: Int = 0, windowY: Int = 0,
         focusStep: Int? = null, prog: Tracker.Progress? = null, now: com.johun.rummiassist.core.Recognizer.Result? = null,
+        overTimeVisible: Boolean = false,
     ) {
-        advice = a; labels = showLabels; winX = windowX; winY = windowY; focus = focusStep; progress = prog; current = now; invalidate()
+        advice = a; labels = showLabels; winX = windowX; winY = windowY; focus = focusStep; progress = prog; current = now
+        showOverTime = overTimeVisible; invalidate()
     }
 
     /** 아직 안 옮긴 타일의 지금 위치 */
@@ -96,6 +101,7 @@ class HighlightView(context: Context) : View(context) {
                 c.drawText(t.kind.toString(), bx, by + 12 * d, text)
             }
         }
+        if (a.overTime && !showOverTime) return
         // ✓ 는 세트가 '다 완성됐을 때'만: 그 세트 자리 전체를 초록 테두리로 감싼다(한 장만 옮겨진 건 완성이 아님)
         for (set in a.sets) {
             val moving = set.tiles.filter { it.target != null }
@@ -232,7 +238,7 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
         a: Advisor.Advice?, status: String?, meldDone: Boolean, labels: Boolean, useJoker: Boolean,
         onMeldToggle: (Boolean) -> Unit, onLabelsToggle: (Boolean) -> Unit, onJokerToggle: (Boolean) -> Unit,
         onClose: () -> Unit, focus: Int? = null, onFocus: (Int) -> Unit = {},
-        progress: Tracker.Progress? = null,
+        progress: Tracker.Progress? = null, overTimeVisible: Boolean = false, onShowAnyway: () -> Unit = {},
     ) {
         val r = root ?: LinearLayout(ctx).also {
             it.orientation = LinearLayout.VERTICAL
@@ -245,13 +251,13 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
         }
         // 내용이 같으면 다시 만들지 않는다(실시간 갱신 중에 누른 터치가 사라지지 않게)
         val key = listOf(
-            System.identityHashCode(a), status, meldDone, labels, useJoker, focus, progress?.done?.size,
+            System.identityHashCode(a), status, meldDone, labels, useJoker, focus, progress?.done?.size, overTimeVisible,
             prefs.getBoolean("panelMin", true),
         ).joinToString("|")
         if (key == lastKey && r.childCount > 0) return
         lastKey = key
         r.removeAllViews()
-        val again = { lastKey = null; show(a, status, meldDone, labels, useJoker, onMeldToggle, onLabelsToggle, onJokerToggle, onClose, focus, onFocus, progress) }
+        val again = { lastKey = null; show(a, status, meldDone, labels, useJoker, onMeldToggle, onLabelsToggle, onJokerToggle, onClose, focus, onFocus, progress, overTimeVisible, onShowAnyway) }
 
         // 최소화: 한 줄(지금 단계 · 남은 이동 · 다음 이동)만. 누르면 펼침.
         val minimized = prefs.getBoolean("panelMin", true)
@@ -296,7 +302,13 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
                 12f, 0xFFB0C4E8.toInt(),
             ))
             for (w in a.warnings) r.addView(label("⚠ $w", 12f, 0xFFFF8A80.toInt()))
-            if (a.steps.isNotEmpty()) {
+            if (a.overTime && !overTimeVisible) {
+                r.addView(label("시간 안에 다 못 하면 판이 깨진 채 끝나 벌칙을 받아요. 시간이 넉넉하면 아래를 눌러 안내를 보세요.", 12f, 0xFFFFB74D.toInt()))
+                r.addView(label("  그래도 보기  ", 14f, 0xFFFFFFFF.toInt(), bold = true).apply {
+                    background = roundRect(0x33FFFFFF, 6 * d)
+                    setOnClickListener { onShowAnyway() }
+                })
+            } else if (a.steps.isNotEmpty()) {
                 // 단계 하나씩(판을 덜 가림). 단계를 끝까지 하면 그때의 판이 유효하다.
                 val n = a.steps.size
                 val nav = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }

@@ -547,7 +547,9 @@ object Advisor {
                 val left = tiles.indices.filter { !present[it] }.toMutableList()
                 while (left.isNotEmpty()) {
                     val adj = left.filter { k -> (k > 0 && present[k - 1]) || (k < tiles.size - 1 && present[k + 1]) }
-                    val k = (adj.ifEmpty { listOf(left.min()) }).minWith(compareBy<Int> { if (tiles[it].tile.fromHand) 0 else 1 }.thenBy { it })
+                    // 새 세트(이미 있는 타일 없음)는 손패 타일로 시작 → 판의 멀쩡한 세트를 깨는 이동은 최대한 뒤로
+                    val start = left.filter { tiles[it].tile.fromHand }.ifEmpty { left }
+                    val k = (adj.ifEmpty { start }).minWith(compareBy<Int> { if (tiles[it].tile.fromHand) 0 else 1 }.thenBy { it })
                     left.remove(k); present[k] = true
                     seq += tiles[k]; applied += tiles[k]
                 }

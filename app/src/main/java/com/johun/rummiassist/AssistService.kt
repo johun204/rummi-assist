@@ -74,6 +74,8 @@ class AssistService : AccessibilityService() {
     private var turnStartBoard: List<com.johun.rummiassist.core.DetectedTile>? = null
     private var turnTotals: Map<com.johun.rummiassist.core.TileKind, Int>? = null
     private var lastDone = -1
+    /** 뽑기를 권하는 계획이라도 사용자가 「그래도 보기」를 눌렀으면 화살표 표시 */
+    private var showAnyway = false
 
     /** 인식 결과 + 게임 창의 화면상 위치 */
     private class Frame(val rec: Recognizer.Result, val x: Int, val y: Int)
@@ -486,7 +488,7 @@ class AssistService : AccessibilityService() {
             }
             plan = advice
             prog = Tracker.track(advice, f.rec)
-            focus = 1; manualFocus = false; lastDone = -1
+            focus = 1; manualFocus = false; lastDone = -1; showAnyway = false
         }
         // 진행이 생기면 아직 안 끝난 첫 단계로 자동 이동
         val doneNow = prog!!.done.size
@@ -499,7 +501,7 @@ class AssistService : AccessibilityService() {
             panel?.bringToFront()
         }
         val fNow = focus?.takeIf { n -> advice.steps.any { it.number == n } }
-        hv.setAdvice(advice, showLabels, f.x, f.y, fNow, prog, f.rec)
+        hv.setAdvice(advice, showLabels, f.x, f.y, fNow, prog, f.rec, showAnyway)
         showPanel(advice, null, fNow, prog)
     }
 
@@ -523,6 +525,8 @@ class AssistService : AccessibilityService() {
             // n = 단계 번호, 0 = 전체
             onFocus = { n -> focus = if (n == 0) null else n; manualFocus = true; render() },
             progress = prog,
+            overTimeVisible = showAnyway,
+            onShowAnyway = { showAnyway = true; prefs.edit().putBoolean("panelMin", false).apply(); render() },
         )
         bringBubbleToFront()
     }

@@ -121,4 +121,35 @@ class RegressionTest {
         // 다음 이동은 원래 계획의 두 번째 이동(새 좌표)
         assertEquals(a.moves[1].tile, b.moves.first { it !in prog.done }.tile)
     }
+
+    /** 2026-11-07 제보 3: 판이 빡빡해 '뽑기 권장'인데도 화살표가 그대로 보였고, 첫 이동이 멀쩡한 런(R10 R11 R12) 가운데를 빼 단독 2개를 만듦 */
+    private fun screen3(): Recognizer.Result {
+        fun t(s: String, c: Int, cy: Int, hand: Boolean = false): DetectedTile {
+            val w = 86; val h = 124; val cx = if (hand) c else 355 + (c * 91.5).toInt()
+            return DetectedTile(k(s), Rect(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2), Rect(cx - 16, cy - 40, cx + 16, cy), hand, 0.0)
+        }
+        fun row(cy: Int, vararg x: Pair<Int, String>) = x.map { (c, s) -> t(s, c, cy) }
+        val sets = listOf(
+            row(205, 3 to "O1", 4 to "O2", 5 to "O3", 6 to "O4"), row(205, 8 to "B3", 9 to "R3", 10 to "K3"), row(205, 12 to "K12", 13 to "B12", 14 to "O12"),
+            row(343, 0 to "R10", 1 to "R11", 2 to "R12"), row(343, 4 to "K9", 5 to "B9", 6 to "R9"), row(343, 8 to "R4", 9 to "R5", 10 to "R6", 11 to "R7", 12 to "R8"),
+            row(482, 1 to "R10", 2 to "O10", 3 to "K10"), row(482, 5 to "B7", 6 to "B8", 7 to "B9", 8 to "B10", 9 to "B11"), row(482, 11 to "K1", 12 to "B1", 13 to "O1", 14 to "R1"),
+            row(620, 1 to "R13", 2 to "O13", 3 to "B13"), row(620, 5 to "R13", 6 to "O13", 7 to "K13"), row(620, 9 to "O5", 10 to "O6", 11 to "O7", 12 to "O8"),
+        )
+        val hand = listOf("K3" to 447, "K10" to 565, "O10" to 805, "O11" to 925, "R4" to 1045).map { (s, x) -> t(s, x, 1005, true) }
+        return Recognizer.Result(sets.flatten() + hand, sets, 950, 1972, 1248)
+    }
+
+    @Test fun tightBoard() {
+        val r = screen3()
+        for (budget in listOf(6, 1000)) {
+            val a = Advisor.advise(r, true, false, moveBudget = budget)
+            println("tight budget=$budget: ${a.message} overTime=${a.overTime} 이동 ${a.moves.size}")
+            for (m in a.moves) println("     ${m.tile}${if (m.isPark) "(임시)" else ""}")
+            // 무효 타일 수 흐름
+        }
+        val a = Advisor.advise(r, true, false)
+        // 새 세트를 만들 땐 손패 타일부터 놓아, 멀쩡한 판 세트를 최대한 늦게 깬다
+        val first = a.moves.first()
+        assertTrue("첫 이동이 판 타일: ${first.tile}", first.tile.fromHand)
+    }
 }
