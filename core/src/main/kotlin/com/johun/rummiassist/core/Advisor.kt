@@ -51,6 +51,8 @@ object Advisor {
         /** 조커를 안 쓰기로 했을 때, 썼다면 얼마나 더 낼 수 있는지 */
         val jokerHint: String? = null,
         val steps: List<Step> = emptyList(),
+        /** 제한 시간(이동 예산) 안에 끝나는 단계가 하나도 없음 → 무리하다 실패하면 벌칙이므로 뽑기를 권한다 */
+        val overTime: Boolean = false,
     ) {
         /** 전체 이동 순서(단계 순 → 단계 안 순서). 앞에서부터 하면 단계가 끝날 때마다 판이 유효. */
         val moves: List<PlanTile> get() = steps.flatMap { it.moves }
@@ -60,7 +62,29 @@ object Advisor {
      * @param useHandJokers false 면 손패 조커는 없는 것으로 계산(판 위 조커는 규칙상 계속 써야 함)
      * 제안은 화면에 실제로 있는 판 타일 + 손패만으로 만든다. 인식이 앞뒤가 안 맞으면(같은 타일 3장 등) 아무것도 제안하지 않는다.
      */
-    fun advise(rec: Recognizer.Result, initialMeldDone: Boolean, useHandJokers: Boolean = true): Advice {
+    /**
+     * @param moveBudget 한 턴에 할 수 있는 이동 수(제한 시간 / 이동 1번 시간). 최대 장수 계획의 단계를 순서대로 해서
+     *   이 안에 끝나는 장수가 적으면, 덜 내는 다른 계획 중 '제한 시간 안에 실제로 내는 장수'가 가장 많은 것을 고른다.
+     */
+    fun advise(
+        rec: Recognizer.Result, initialMeldDone: Boolean, useHandJokers: Boolean = true, moveBudget: Int = Int.MAX_VALUE,
+        /** 이번 턴에 이미 손패에서 판으로 낸 타일(첫 등록 도중 다시 계산할 때 이 타일들도 등록 세트에 넣는다) */
+        placedThisTurn: List<DetectedTile> = emptyList(),
+    ): Advice {
+        // '이번 턴에 낸 타일'은 첫 등록 중에만 의미가 있다(턴 경계를 화면만으로 확실히 알 수 없어서, 그 밖엔 쓰지 않음)
+        val placed = if (initialMeldDone) emptyList() else placedThisTurn
+        val a = adviseInner(rec, initialMeldDone, useHandJokers, moveBudget, placed)
+        if (moveBudget == Int.MAX_VALUE || a.moves.isEmpty() || placed.isNotEmpty()) return a
+        // 첫 등록은 한 번에 다 해야 하고, 그 밖엔 첫 단계라도 시간 안에 끝나야 한다
+        val fits = if (!initialMeldDone) a.moves.size <= moveBudget else tilesWithin(a, moveBudget) > 0
+        if (fits) return a
+        return Advice(a.recognized, a.sets, a.keptSets, a.handPlayed, a.handValue,
+            "제한 시간 안에 끝낼 수 있는 조합이 없어요 — 뽑기를 권해요 (${a.moves.size}번 이동 필요)", a.warnings, a.jokerHint, a.steps, overTime = true)
+    }
+
+    private fun adviseInner(
+        rec: Recognizer.Result, initialMeldDone: Boolean, useHandJokers: Boolean, moveBudget: Int, placedThisTurn: List<DetectedTile>,
+    ): Advice {
         val warnings = ArrayList<String>()
         val boardTiles = rec.board
         val handTiles = rec.hand
@@ -76,7 +100,7 @@ object Advisor {
         for (s in origSets - validOrig.toSet()) warnings += "판 세트 인식 이상: ${s.joinToString(" ") { it.kind.toString() }}"
 
         fun result(sol: Solution?, msg: String, hint: String? = null): Advice {
-            if (sol == null || sol.handTiles == 0) return Advice(rec, emptyList(), origSets.size, 0, 0, msg, warnings, hint)
+            if (sol == null || (sol.handTiles == 0 && placedThisTurn.isEmpty())) return Advice(rec, emptyList(), origSets.size, 0, 0, msg, warnings, hint)
             val a = present(rec, origSets, sol, msg, warnings, hint, initialMeldDone)
             // 화면에 없는 타일이 하나라도 들어간 제안은 보여 주지 않는다.
             if (a.sets.any { s -> s.tiles.any { it.screen == null } })
@@ -87,12 +111,18 @@ object Advisor {
         val (hc, hjAll) = counts(handTiles)
         val hj = if (useHandJokers) hjAll else 0
         if (!initialMeldDone) {
-            // 첫 등록: 손패만으로 30점 이상. 먼저 장수 최대, 부족하면 점수 최대.
+            // 첫 등록: 손패만으로 30점 이상. 이동(=놓는 장수) 예산 안에서 가장 많이, 예산 안에 30점이 안 되면
+            // 30점을 넘기는 가장 적은 장수로. 점수/장수 가중치를 바꿔 가며 후보를 만든다.
+            // 이번 턴에 이미 낸 타일은 '반드시 쓰는' 타일로(판의 다른 타일은 첫 등록 전이라 못 씀)
+            val (pc, pj) = counts(placedThisTurn)
+            fun meldValue(sol: Solution) = sol.sets.flatten().sumOf { it.value }
             fun meld(jokers: Int): Solution? {
-                val empty = Solver.emptyCounts()
-                var sol = Solver.solve(empty, hc, 0, jokers, wCount = 1000, wValue = 1, jokerValue = true)
-                if (sol != null && sol.handValue < 30) sol = Solver.solve(empty, hc, 0, jokers, wCount = 1, wValue = 1000, jokerValue = true)
-                return sol?.takeIf { it.handValue >= 30 }
+                val cands = ArrayList<Solution>()
+                Solver.solve(pc, hc, pj, jokers, wCount = 1000, wValue = 1, jokerValue = true)?.let { cands += it }
+                for (pen in longArrayOf(0, 4, 8, 11, 14, 20)) Solver.solve(pc, hc, pj, jokers, wCount = -pen, wValue = 1, jokerValue = true)?.let { cands += it }
+                val ok = cands.filter { meldValue(it) >= 30 && (it.handTiles > 0 || placedThisTurn.isNotEmpty()) }
+                return ok.filter { it.handTiles <= moveBudget }.maxWithOrNull(compareBy<Solution> { it.handTiles }.thenBy { it.handValue })
+                    ?: ok.minWithOrNull(compareBy<Solution> { it.handTiles }.thenByDescending { it.handValue })
             }
             val sol = meld(hj)
             val hint = if (hj < hjAll) meld(hjAll)?.let { j ->
@@ -100,7 +130,7 @@ object Advisor {
                 else if (j.handTiles > sol.handTiles) "조커를 쓰면 ${j.handTiles - sol.handTiles}장 더 낼 수 있어요" else null
             } else null
             if (sol == null) return result(null, "첫 등록(30점) 불가 — 타일을 뽑으세요", hint)
-            return result(sol, "첫 등록: 손패 ${sol.handTiles}장, ${sol.handValue}점", hint)
+            return result(sol, "첫 등록: 손패 ${sol.handTiles + placedThisTurn.size}장, ${meldValue(sol)}점", hint)
         }
 
         val (bc, bj) = counts(boardTiles)
@@ -111,7 +141,7 @@ object Advisor {
         } else null
         if (sol.handTiles == 0) return result(null, "낼 수 있는 조합이 없어요 — 타일을 뽑으세요", hint)
         val best = result(preserve(sol, validOrig), "최대 ${sol.handTiles}장 내기 (합 ${sol.handValue})", hint)
-        if (best.steps.none { it.blocked }) return best
+        if (best.steps.none { it.blocked }) return withinTime(best, sol, bc, hc, bj, hj, validOrig, hint, moveBudget, ::result)
         // 최적 배치가 판에 다 들어가지 않으면, 덜 내는 다른 배치(조커 빼기, 손패 한 종류씩 빼기)가
         // 실제로 '할 수 있는' 장수가 더 많은지 비교해 고른다.
         fun doable(a: Advice) = a.steps.filter { !it.blocked }.sumOf { it.handTiles }
@@ -125,6 +155,62 @@ object Advisor {
             if (alt.handTiles <= doable(pick)) continue
             val a2 = result(preserve(alt, validOrig), "${alt.handTiles}장 내기 (합 ${alt.handValue}) — 최대 ${sol.handTiles}장은 판에 자리가 부족", hint)
             if (doable(a2) > doable(pick)) pick = a2
+        }
+        return pick
+    }
+
+    /**
+     * 턴 시작 때 판(start)과 지금 판(now)을 비교해 이번 턴에 새로 판에 놓인 타일을 고른다.
+     * 종류별로 늘어난 장수만큼, 턴 시작 때 그 종류 타일 자리에서 가장 먼 것.
+     */
+    fun placedSince(start: List<DetectedTile>, now: List<DetectedTile>): List<DetectedTile> {
+        val out = ArrayList<DetectedTile>()
+        for ((k, list) in now.groupBy { it.kind }) {
+            val extra = list.size - start.count { it.kind == k }
+            if (extra <= 0) continue
+            val olds = start.filter { it.kind == k }
+            out += list.sortedByDescending { n -> olds.minOfOrNull { o -> kotlin.math.abs(o.rect.cx - n.rect.cx) + kotlin.math.abs(o.rect.cy - n.rect.cy) } ?: Int.MAX_VALUE }.take(extra)
+        }
+        return out
+    }
+
+    /** 단계를 순서대로 해서 이동 예산 안에 끝나는 손패 장수 */
+    fun tilesWithin(a: Advice, budget: Int): Int {
+        var moves = 0; var tiles = 0
+        for (st in a.steps) {
+            if (st.blocked) break
+            moves += st.moves.size
+            if (moves > budget) break
+            tiles += st.handTiles
+        }
+        return tiles
+    }
+
+    /**
+     * 제한 시간 고려: 최대 장수 계획이 시간 안에 다 안 되면, 손패를 한 장씩 빼 본 계획들 중
+     * '시간 안에 내는 장수'가 가장 많은 것(같으면 이동이 적은 것)을 고른다. 몇 번 반복해 더 줄여 본다.
+     */
+    private fun withinTime(
+        best: Advice, sol: Solution, bc: Array<IntArray>, hc: Array<IntArray>, bj: Int, hj: Int,
+        validOrig: List<List<DetectedTile>>, hint: String?, budget: Int,
+        result: (Solution?, String, String?) -> Advice,
+    ): Advice {
+        if (budget == Int.MAX_VALUE || best.moves.size <= budget) return best
+        fun score(a: Advice) = tilesWithin(a, budget)
+        var pick = best; var pickH = hc; var pickJ = hj
+        repeat(3) {
+            var improved = false
+            val tries = ArrayList<Pair<Array<IntArray>, Int>>()
+            if (pickJ > 0) tries += pickH to pickJ - 1
+            for (c in 0..3) for (v in 1..13) if (pickH[c][v] > 0) tries += Array(4) { pickH[it].clone() }.also { it[c][v]-- } to pickJ
+            for ((h2, j2) in tries) {
+                val alt = Solver.solve(bc, h2, bj, j2) ?: continue
+                if (alt.handTiles == 0 || alt.handTiles < score(pick)) continue
+                val a2 = result(preserve(alt, validOrig), "${alt.handTiles}장 내기 (합 ${alt.handValue}) — 제한 시간 안에 끝나는 배치", hint)
+                if (a2.steps.any { it.blocked }) continue
+                if (compareValuesBy(a2, pick, { score(it) }, { -it.moves.size }) > 0) { pick = a2; pickH = h2; pickJ = j2; improved = true }
+            }
+            if (!improved || pick.moves.size <= budget) return pick
         }
         return pick
     }
@@ -273,7 +359,7 @@ object Advisor {
             Step(st.number, st.sets.map { s -> PlanSet(s.number, s.status, s.tiles.map { map[it]!! }, s.noRoom, s.step, s.relaxed) },
                 st.valid, st.moves.map { map[it]!! })
         }
-        return Advice(rec, steps.flatMap { it.sets }, a.keptSets, a.handPlayed, a.handValue, a.message, a.warnings, a.jokerHint, steps)
+        return Advice(rec, steps.flatMap { it.sets }, a.keptSets, a.handPlayed, a.handValue, a.message, a.warnings, a.jokerHint, steps, a.overTime)
     }
 
     /** 원래 판 세트 번호를 공유하는 것끼리 묶은 연결 요소(세트 번호 목록들) */

@@ -43,6 +43,24 @@ class MainActivity : Activity() {
             setPadding(0, pad / 2, 0, pad / 2)
             setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean(AssistService.KEY_ENABLED, on).apply(); refresh() }
         })
+        // 턴 제한 시간: 이 안에 끝낼 수 있는 만큼만 안내(이동 1번 ≈ 2.3초로 계산)
+        col.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(TextView(this@MainActivity).apply { text = "턴 제한 시간(초)"; textSize = 16f }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(android.widget.EditText(this@MainActivity).apply {
+                inputType = android.text.InputType.TYPE_CLASS_NUMBER
+                setText(prefs.getInt(AssistService.KEY_TURN_SECONDS, 15).toString())
+                width = (80 * d).toInt()
+                addTextChangedListener(object : android.text.TextWatcher {
+                    override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                    override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                    override fun afterTextChanged(e: android.text.Editable?) {
+                        e?.toString()?.toIntOrNull()?.takeIf { it in 5..600 }?.let { prefs.edit().putInt(AssistService.KEY_TURN_SECONDS, it).apply() }
+                    }
+                })
+            })
+        })
         col.addView(Button(this).apply {
             text = "1. 접근성 서비스 켜기"
             setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
@@ -72,6 +90,7 @@ class MainActivity : Activity() {
                 • 패널은 기본으로 한 줄(최소화)로 보입니다. ▢ 를 누르면 펼쳐지고 – 로 다시 줄어듭니다.
                 • 「인식 표시」를 켜면 인식한 타일 값을 타일 위에 보여 줍니다.
                 • 버튼을 길게 누르면 끄고 표시를 지우며, 끌어서 위치를 옮길 수 있습니다.
+                • 「턴 제한 시간」 안에 끝낼 수 있는 만큼만 안내합니다. 첫 단계도 시간 안에 못 끝낼 것 같으면 뽑기를 권합니다.
                 • 화면은 기기 안에서만 분석하며 어디에도 전송하지 않습니다.
             """.trimIndent()
         })

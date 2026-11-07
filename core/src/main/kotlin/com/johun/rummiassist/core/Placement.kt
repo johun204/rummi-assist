@@ -70,9 +70,9 @@ internal object Placement {
         val rowPitch = tileH * 1.04
 
         val w = rec.width; val h = rec.height
-        val xMin = minOf(w * 0.14, board.minOfOrNull { it.rect.left }?.toDouble() ?: Double.MAX_VALUE)
+        val xMin = minOf(w * 0.165, board.minOfOrNull { it.rect.left }?.toDouble() ?: Double.MAX_VALUE)
         val xMax = maxOf(w * 0.85, board.maxOfOrNull { it.rect.right }?.toDouble() ?: 0.0)
-        // 판 영역: 첨부 캡처 기준 가로 14~85%, 세로 10%~랙 위 (기존 판 타일이 더 바깥에 있으면 거기까지)
+        // 판 영역: 첨부 캡처 기준 가로 16.5~85%, 세로 10%~랙 위 (기존 판 타일이 더 바깥에 있으면 거기까지)
         val yMin = minOf(h * 0.10, board.minOfOrNull { it.rect.top }?.toDouble() ?: Double.MAX_VALUE)
         val yMax = rec.rackTop - tileH * 0.1
 
@@ -349,11 +349,11 @@ internal object Placement {
         return Out(outTiles, outTargets, placed.map { it != null }, free.sortedBy { it.second }.map { it.first }, relaxedFlags.toList())
     }
 
-    /** 판 타일 크기. 판이 비었으면 손패 타일의 75%로 가정. */
+    /** 판 타일 크기. 판이 비었으면 실제 게임 첫 판 크기(화면 폭의 5.6%, 첨부 캡처 실측)로 가정. */
     fun tileSize(rec: Recognizer.Result): Pair<Int, Int> {
         rec.board.firstOrNull()?.let { return it.rect.width to it.rect.height }
-        val h = rec.hand.firstOrNull() ?: return 1 to 1
-        return (h.rect.width * 0.75).roundToInt() to (h.rect.height * 0.75).roundToInt()
+        val w = (rec.width * 0.056).roundToInt().coerceAtLeast(1)
+        return w to (w * 1.48).roundToInt()
     }
 
     private fun isGroup(t: List<SetTile>) = t.size <= 4 && t.all { it.value == t[0].value } && t.map { it.color }.toSet().size == t.size

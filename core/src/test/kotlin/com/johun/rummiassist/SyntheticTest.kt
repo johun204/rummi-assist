@@ -18,7 +18,7 @@ import kotlin.random.Random
 class SyntheticTest {
     private class GlyphShape(val t: FloatArray, val w: Int, val h: Int)
 
-    private val s1 = loadImg("s1.png")
+    internal val s1 = loadImg("s1.png")
     private val s4 = loadImg("s4.png")
 
     // s4 판의 검정 6 타일(실측 x 886..997, y 141..305)에서 글자를 지운 빈 타일
@@ -87,7 +87,7 @@ class SyntheticTest {
     )
 
     /** 타일 1장을 폭 W 로 그려 장면에 붙인다. 판 타일 실측 비율: 높이 1.48W, 글자 높이 0.465W(조커 0.70W), 글자 중심 0.323H. */
-    private fun drawTile(scene: Img, x0: Int, y0: Int, w: Int, kind: TileKind, redJoker: Boolean) {
+    internal fun drawTile(scene: Img, x0: Int, y0: Int, w: Int, kind: TileKind, redJoker: Boolean) {
         val h = (w * 1.48).roundToInt()
         val tile = resampleArgb(blank.px, blank.w, blank.h, w, h)
         val shape = shapes.getValue(if (kind.isJoker) "J" + (if (redJoker) "R" else "K") else kind.value.toString())

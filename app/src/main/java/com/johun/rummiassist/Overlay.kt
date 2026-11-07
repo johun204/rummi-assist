@@ -288,7 +288,7 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
                 if (meldDone) "모드: 판 재배치 포함 최대 장수" else "모드: 첫 등록 전 — 손패만으로 30점 (판 사용 불가)",
                 11f, if (meldDone) 0xFF80CBC4.toInt() else 0xFFFFB74D.toInt(), bold = true,
             ))
-            r.addView(label(a.message, 16f, 0xFFFFFFFF.toInt(), bold = true))
+            r.addView(label(a.message, 16f, if (a.overTime) 0xFFFFB74D.toInt() else 0xFFFFFFFF.toInt(), bold = true))
             a.jokerHint?.let { r.addView(label("☺ $it", 12f, 0xFFFFEB3B.toInt())) }
             r.addView(label(
                 "인식: 판 ${a.recognized.board.size}장 · 손패 ${a.recognized.hand.size}장" +
@@ -347,7 +347,7 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
     /** 최소화 때 한 줄 요약 */
     private fun summary(a: Advisor.Advice?, status: String?, prog: Tracker.Progress?): String {
         if (a == null) return status ?: "루미"
-        if (a.steps.isEmpty()) return a.message
+        if (a.steps.isEmpty() || a.overTime) return a.message
         val left = a.moves.filter { prog?.done?.contains(it) != true }
         if (left.isEmpty()) return "✅ 완료 — 턴을 끝내세요"
         val next = left.first()

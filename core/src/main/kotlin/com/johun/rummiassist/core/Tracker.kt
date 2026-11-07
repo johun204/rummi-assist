@@ -27,6 +27,9 @@ object Tracker {
         fun med(l: List<Int>) = l.sorted()[l.size / 2].toDouble()
         val sc = med(now.map { it.rect.width }) / med(old.map { it.rect.width })
         val w = med(now.map { it.rect.width })
+        // 판이 그대로면(옛 판 타일 대부분이 같은 자리에 있음) 계획도 그대로 — 판 타일이 몇 장 안 될 때도 확실히
+        val stay = old.count { o -> now.any { n -> n.kind == o.kind && abs(n.rect.cx - o.rect.cx) < w * 0.3 && abs(n.rect.cy - o.rect.cy) < w * 0.3 } }
+        if (abs(sc - 1) < 0.05 && stay * 10 >= old.size * 6) return advice
         val bin = w * 0.3
         val votes = HashMap<Pair<Int, Int>, MutableList<Pair<Double, Double>>>()
         for (o in old) for (n in now) if (o.kind == n.kind) {
@@ -35,7 +38,8 @@ object Tracker {
         }
         val best = votes.maxByOrNull { it.value.size }?.value ?: return null
         // 옮기지 않은 판 타일 대부분이 같은 변환으로 맞아야 믿는다
-        if (best.size < maxOf(4, (minOf(old.size, now.size) * 0.4).roundToInt())) return null
+        val need = if (old.size <= 3) old.size else maxOf(3, (minOf(old.size, now.size) * 0.4).roundToInt())
+        if (best.size < need) return null
         val tx = best.sumOf { it.first } / best.size; val ty = best.sumOf { it.second } / best.size
         if (abs(sc - 1) < 0.02 && abs(tx) < w * 0.15 && abs(ty) < w * 0.15) return advice
         return Advisor.remap(advice, rec) { r ->

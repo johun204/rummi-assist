@@ -70,6 +70,9 @@ class AssistService : AccessibilityService() {
      * → 옮기는 도중의 어중간한 판으로 새 계획을 세워 계획이 계속 바뀌는 일이 없다.
      */
     private var plan: Advisor.Advice? = null
+    /** 이번 턴 시작(판+손패 구성이 바뀐 직후) 때의 판 — 턴 도중 다시 계산할 때 이번 턴에 낸 타일을 알려고 */
+    private var turnStartBoard: List<com.johun.rummiassist.core.DetectedTile>? = null
+    private var turnTotals: Map<com.johun.rummiassist.core.TileKind, Int>? = null
     private var lastDone = -1
 
     /** 인식 결과 + 게임 창의 화면상 위치 */
@@ -472,8 +475,12 @@ class AssistService : AccessibilityService() {
             }
         } else advice = null
         if (advice == null) {
+            // 판+손패 구성이 바뀌었으면 새 턴: 지금 판을 턴 시작 판으로 기억
+            val totals = f.rec.tiles.groupingBy { it.kind }.eachCount()
+            if (totals != turnTotals) { turnTotals = totals; turnStartBoard = f.rec.board }
+            val placed = turnStartBoard?.let { Advisor.placedSince(it, f.rec.board) } ?: emptyList()
             advice = try {
-                Advisor.advise(f.rec, meldDone, useJoker)
+                Advisor.advise(f.rec, meldDone, useJoker, moveBudget = moveBudget(), placedThisTurn = placed)
             } catch (t: Throwable) {
                 return showStatus("계산 오류: ${t.message}")
             }
@@ -495,6 +502,9 @@ class AssistService : AccessibilityService() {
         hv.setAdvice(advice, showLabels, f.x, f.y, fNow, prog, f.rec)
         showPanel(advice, null, fNow, prog)
     }
+
+    /** 제한 시간 안에 할 수 있는 이동 수(이동 1번 ≈ 2.3초: 끌기 1.5초 + 화면 확인 0.8초) */
+    private fun moveBudget() = (prefs.getInt(KEY_TURN_SECONDS, 15) / 2.3).toInt().coerceAtLeast(1)
 
     private fun showStatus(msg: String) {
         if (!live) return toast(msg)
@@ -543,6 +553,8 @@ class AssistService : AccessibilityService() {
 
     companion object {
         const val KEY_ENABLED = "enabled"
+        /** 한 턴 제한 시간(초) */
+        const val KEY_TURN_SECONDS = "turnSeconds"
         /** 감지할 게임 패키지(디버그 빌드에서만 바꿀 수 있음) */
         const val KEY_GAME_PKG = "gamePackage"
         const val GAME_PKG = "com.rummikubfree"
