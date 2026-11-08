@@ -77,8 +77,19 @@ class AssistService : AccessibilityService() {
     /** 뽑기를 권하는 계획이라도 사용자가 「그래도 보기」를 눌렀으면 화살표 표시 */
     private var showAnyway = false
 
-    /** 인식 결과 + 게임 창의 화면상 위치 */
-    private class Frame(val rec: Recognizer.Result, val x: Int, val y: Int)
+    /** 인식 결과 + 게임 창의 화면상 위치 + 아바타 위 남은 시간(내 차례일 때만) */
+    private class Frame(val rec: Recognizer.Result, val x: Int, val y: Int, val timer: Int? = null)
+
+    // ---- 남은 시간: 화면의 타이머 숫자를 읽고, 안 보이면 (설정 시간 - 턴 시작 후 지난 시간)
+    private var lastTimer: Int? = null
+    private var lastTimerAt = 0L
+    private var turnStartAt = System.currentTimeMillis()
+
+    private fun secondsLeft(): Double {
+        val now = System.currentTimeMillis()
+        lastTimer?.let { t -> if (now - lastTimerAt < 2500) return t - (now - lastTimerAt) / 1000.0 }
+        return prefs.getInt(KEY_TURN_SECONDS, 15) - (now - turnStartAt) / 1000.0
+    }
 
     private val prefs by lazy { getSharedPreferences("settings", Context.MODE_PRIVATE) }
     /** 첫 등록(30점) 완료 여부. 기본은 완료. 직접 끄면, 손패가 3장 이상 판으로 나간 뒤 다시 완료로. */
@@ -402,7 +413,7 @@ class AssistService : AccessibilityService() {
         var i = 0
         while (i < px.size) { hash = hash * 31 + px[i]; i += 97 }
         lastHashRec?.let { if (hash == lastHash) return it }
-        val f = Frame(recognizer.recognize(px, w, h), ox, oy)
+        val f = Frame(recognizer.recognize(px, w, h), ox, oy, com.johun.rummiassist.core.TimerReader.read(px, w, h))
         lastHash = hash; lastHashRec = f
         return f
     }
@@ -426,7 +437,16 @@ class AssistService : AccessibilityService() {
             return schedule(1500)
         }
         emptyStreak = 0
+        // 타이머 숫자가 새로 나타나면(또는 크게 늘면) 내 턴 시작: 계획을 새로 세운다
+        if (f.timer != null) {
+            val prev = lastTimer
+            if (prev == null || System.currentTimeMillis() - lastTimerAt > 3000 || f.timer > prev + 3) {
+                plan = null; turnTotals = null; turnStartAt = System.currentTimeMillis()
+            }
+            lastTimer = f.timer; lastTimerAt = System.currentTimeMillis()
+        }
         val sig = signature(f)
+        if (sig == shownSig && shown != null) { shown = f; render() } // 화면은 그대로여도 남은 시간에 따라 표시 갱신
         if (sig != shownSig) {
             if (sig == pendingSig) pendingCount++ else { pendingSig = sig; pendingCount = 1 }
             if (pendingCount >= 2) {
@@ -481,6 +501,7 @@ class AssistService : AccessibilityService() {
             val totals = f.rec.tiles.groupingBy { it.kind }.eachCount()
             if (totals != turnTotals) { turnTotals = totals; turnStartBoard = f.rec.board }
             val placed = turnStartBoard?.let { Advisor.placedSince(it, f.rec.board) } ?: emptyList()
+            if (totals != turnTotals) turnStartAt = System.currentTimeMillis()
             advice = try {
                 Advisor.advise(f.rec, meldDone, useJoker, moveBudget = moveBudget(), placedThisTurn = placed)
             } catch (t: Throwable) {
@@ -501,19 +522,24 @@ class AssistService : AccessibilityService() {
             panel?.bringToFront()
         }
         val fNow = focus?.takeIf { n -> advice.steps.any { it.number == n } }
-        hv.setAdvice(advice, showLabels, f.x, f.y, fNow, prog, f.rec, showAnyway)
-        showPanel(advice, null, fNow, prog)
+        val left = secondsLeft()
+        val visible = Advisor.stepsWithin(advice, prog.done, left)
+        hv.setAdvice(advice, showLabels, f.x, f.y, fNow, prog, f.rec, showAnyway, visible)
+        showPanel(advice, null, fNow, prog, left, visible)
     }
 
-    /** 제한 시간 안에 할 수 있는 이동 수(이동 1번 ≈ 2.3초: 끌기 1.5초 + 화면 확인 0.8초) */
-    private fun moveBudget() = (prefs.getInt(KEY_TURN_SECONDS, 15) / 2.3).toInt().coerceAtLeast(1)
+    /** 남은 시간 안에 할 수 있는 이동 수(이동 1번 ≈ 2.3초: 끌기 1.5초 + 화면 확인 0.8초) */
+    private fun moveBudget() = (secondsLeft() / 2.3).toInt().coerceAtLeast(1)
 
     private fun showStatus(msg: String) {
         if (!live) return toast(msg)
         showPanel(null, msg)
     }
 
-    private fun showPanel(advice: Advisor.Advice?, status: String?, shownFocus: Int? = null, prog: Tracker.Progress? = null) {
+    private fun showPanel(
+        advice: Advisor.Advice?, status: String?, shownFocus: Int? = null, prog: Tracker.Progress? = null,
+        seconds: Double? = null, visible: Set<Int>? = null,
+    ) {
         val p = panel ?: ResultPanel(this, wm).also { panel = it }
         p.show(
             advice, status, meldDone, showLabels, useJoker,
@@ -526,6 +552,7 @@ class AssistService : AccessibilityService() {
             onFocus = { n -> focus = if (n == 0) null else n; manualFocus = true; render() },
             progress = prog,
             overTimeVisible = showAnyway,
+            seconds = seconds, visibleSteps = visible,
             onShowAnyway = { showAnyway = true; prefs.edit().putBoolean("panelMin", false).apply(); render() },
         )
         bringBubbleToFront()

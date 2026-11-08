@@ -171,4 +171,21 @@ class RegressionTest {
         assertTrue("판 타일을 옮김: ${k9.tiles.filter { it.target != null && !it.tile.fromHand }.map { it.tile }}",
             k9.tiles.filter { !it.tile.fromHand }.all { it.target == null })
     }
+
+    /** 남은 시간에 따라 보여 줄 단계: 하던 단계는 끝까지, 그 뒤는 시간 안에 들어가는 것만 */
+    @Test fun stepsWithinTime() {
+        val a = Advisor.advise(screen2(), true, false)
+        val sizes = a.steps.map { it.moves.size }
+        println("steps moves=$sizes")
+        val all = a.steps.map { it.number }.toSet()
+        assertEquals(all, Advisor.stepsWithin(a, emptySet(), 1000.0))
+        // 첫 단계만 들어갈 시간
+        assertEquals(setOf(1), Advisor.stepsWithin(a, emptySet(), sizes[0] * 2.3 + 0.1))
+        // 시간이 거의 없어도 이미 시작한 단계는 끝까지
+        val started = setOf(a.steps[0].moves.first())
+        assertEquals(setOf(1), Advisor.stepsWithin(a, started, 0.5))
+        // 첫 단계를 다 했고 시간이 없으면 더 보여 줄 게 없다(= 여기서 턴 끝내기)
+        val done1 = a.steps[0].moves.toSet()
+        assertEquals(setOf(1), Advisor.stepsWithin(a, done1, 1.0))
+    }
 }

@@ -74,11 +74,14 @@ class HighlightView(context: Context) : View(context) {
     fun setAdvice(
         a: Advisor.Advice?, showLabels: Boolean, windowX: Int = 0, windowY: Int = 0,
         focusStep: Int? = null, prog: Tracker.Progress? = null, now: com.johun.rummiassist.core.Recognizer.Result? = null,
-        overTimeVisible: Boolean = false,
+        overTimeVisible: Boolean = false, visibleSteps: Set<Int>? = null,
     ) {
         advice = a; labels = showLabels; winX = windowX; winY = windowY; focus = focusStep; progress = prog; current = now
-        showOverTime = overTimeVisible; invalidate()
+        showOverTime = overTimeVisible; visible = visibleSteps; invalidate()
     }
+
+    /** 남은 시간 안에 할 수 있는 단계(null = 전부) — 그 밖의 이동은 그리지 않는다 */
+    private var visible: Set<Int>? = null
 
     /** 아직 안 옮긴 타일의 지금 위치 */
     private fun src(pt: Advisor.PlanTile) = progress?.source?.get(pt) ?: pt.screen
@@ -123,7 +126,9 @@ class HighlightView(context: Context) : View(context) {
         }
         // 남은 이동 중 앞의 4개(지금 단계부터 이어서)
         val all = a.moves
-        val next = all.withIndex().filter { (_, pt) -> !done(pt) && src(pt) != null }.take(4)
+        val vis = visible
+        val inTime = { pt: Advisor.PlanTile -> vis == null || a.steps.firstOrNull { pt in it.moves }?.number in vis }
+        val next = all.withIndex().filter { (_, pt) -> !done(pt) && src(pt) != null && inTime(pt) }.take(4)
         for ((k, iv) in next.withIndex().reversed()) {
             val (idx, pt) = iv
             val col = if (k == 0) 0xFFFFEB3B.toInt() else 0xFFFFFFFF.toInt()
@@ -239,6 +244,7 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
         onMeldToggle: (Boolean) -> Unit, onLabelsToggle: (Boolean) -> Unit, onJokerToggle: (Boolean) -> Unit,
         onClose: () -> Unit, focus: Int? = null, onFocus: (Int) -> Unit = {},
         progress: Tracker.Progress? = null, overTimeVisible: Boolean = false, onShowAnyway: () -> Unit = {},
+        seconds: Double? = null, visibleSteps: Set<Int>? = null,
     ) {
         val r = root ?: LinearLayout(ctx).also {
             it.orientation = LinearLayout.VERTICAL
@@ -252,12 +258,13 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
         // 내용이 같으면 다시 만들지 않는다(실시간 갱신 중에 누른 터치가 사라지지 않게)
         val key = listOf(
             System.identityHashCode(a), status, meldDone, labels, useJoker, focus, progress?.done?.size, overTimeVisible,
+            seconds?.toInt(), visibleSteps,
             prefs.getBoolean("panelMin", true),
         ).joinToString("|")
         if (key == lastKey && r.childCount > 0) return
         lastKey = key
         r.removeAllViews()
-        val again = { lastKey = null; show(a, status, meldDone, labels, useJoker, onMeldToggle, onLabelsToggle, onJokerToggle, onClose, focus, onFocus, progress, overTimeVisible, onShowAnyway) }
+        val again = { lastKey = null; show(a, status, meldDone, labels, useJoker, onMeldToggle, onLabelsToggle, onJokerToggle, onClose, focus, onFocus, progress, overTimeVisible, onShowAnyway, seconds, visibleSteps) }
 
         // 최소화: 한 줄(지금 단계 · 남은 이동 · 다음 이동)만. 누르면 펼침.
         val minimized = prefs.getBoolean("panelMin", true)
@@ -269,7 +276,7 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
         val header = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         if (minimized) {
             // 요약 줄: 누르면 펼침, 끌면 이동
-            header.addView(label(summary(a, status, progress), 13f, 0xFFFFFFFF.toInt(), bold = true).apply {
+            header.addView(label((seconds?.let { "⏱${it.toInt().coerceAtLeast(0)} · " } ?: "") + summary(a, status, progress, visibleSteps), 13f, 0xFFFFFFFF.toInt(), bold = true).apply {
                 makeDraggable(this) { toggleMin() }
             })
         } else {
@@ -295,6 +302,10 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
                 11f, if (meldDone) 0xFF80CBC4.toInt() else 0xFFFFB74D.toInt(), bold = true,
             ))
             r.addView(label(a.message, 16f, if (a.overTime) 0xFFFFB74D.toInt() else 0xFFFFFFFF.toInt(), bold = true))
+            if (seconds != null && visibleSteps != null) {
+                val hidden = a.steps.count { !it.blocked && it.number !in visibleSteps }
+                r.addView(label("⏱ 남은 ${seconds.toInt().coerceAtLeast(0)}초" + (if (hidden > 0) " · 시간 안에 못 하는 ${hidden}단계는 숨김" else ""), 12f, 0xFF80CBC4.toInt()))
+            }
             a.jokerHint?.let { r.addView(label("☺ $it", 12f, 0xFFFFEB3B.toInt())) }
             r.addView(label(
                 "인식: 판 ${a.recognized.board.size}장 · 손패 ${a.recognized.hand.size}장" +
@@ -357,11 +368,13 @@ class ResultPanel(private val ctx: Context, private val wm: WindowManager) {
     }
 
     /** 최소화 때 한 줄 요약 */
-    private fun summary(a: Advisor.Advice?, status: String?, prog: Tracker.Progress?): String {
+    private fun summary(a: Advisor.Advice?, status: String?, prog: Tracker.Progress?, visible: Set<Int>? = null): String {
         if (a == null) return status ?: "루미"
         if (a.steps.isEmpty() || a.overTime) return a.message
         val left = a.moves.filter { prog?.done?.contains(it) != true }
         if (left.isEmpty()) return "✅ 완료 — 턴을 끝내세요"
+        // 남은 시간 안에 더 할 수 있는 단계가 없으면 여기서 끝내라고
+        if (visible != null && left.none { m -> a.steps.firstOrNull { m in it.moves }?.number in visible }) return "⏱ 시간 부족 — 여기서 턴을 끝내세요"
         val next = left.first()
         val step = a.steps.first { next in it.moves }
         val t = next.tile

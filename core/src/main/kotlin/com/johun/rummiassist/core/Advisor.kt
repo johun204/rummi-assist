@@ -174,6 +174,23 @@ object Advisor {
         return out
     }
 
+    /**
+     * 남은 시간(초) 안에 할 수 있는 단계 번호들: 이미 시작한(일부 옮긴) 단계는 끝까지 보여 주고,
+     * 그 뒤 단계는 남은 이동 수 x 이동 1번 시간이 남은 시간 안에 들어가는 동안만 순서대로.
+     */
+    fun stepsWithin(a: Advice, done: Set<PlanTile>, seconds: Double, perMove: Double = 2.3): Set<Int> {
+        val out = HashSet<Int>()
+        var used = 0.0
+        for (st in a.steps) {
+            if (st.blocked) break
+            val left = st.moves.count { it !in done }
+            if (left == 0) { out += st.number; continue }
+            val started = left < st.moves.size
+            if (started || used + left * perMove <= seconds) { out += st.number; used += left * perMove } else break
+        }
+        return out
+    }
+
     /** 단계를 순서대로 해서 이동 예산 안에 끝나는 손패 장수 */
     fun tilesWithin(a: Advice, budget: Int): Int {
         var moves = 0; var tiles = 0
