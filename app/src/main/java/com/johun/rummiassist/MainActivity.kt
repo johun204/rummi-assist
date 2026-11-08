@@ -33,6 +33,25 @@ class MainActivity : Activity() {
             setPadding(pad, pad * 2, pad, pad)
         }
         col.addView(TextView(this).apply { text = "루미 도우미"; textSize = 26f; gravity = Gravity.START })
+        // 버전 + GitHub 릴리스 업데이트
+        val current = packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+        val versionRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val versionText = TextView(this).apply { textSize = 14f; text = "현재 버전 v$current · 최신 버전 확인 중…" }
+        val updateBtn = Button(this).apply { text = "업데이트"; visibility = android.view.View.GONE }
+        versionRow.addView(versionText, LinearLayout.LayoutParams(0, -2, 1f))
+        versionRow.addView(updateBtn)
+        col.addView(versionRow)
+        Updater.latest { rel ->
+            when {
+                rel == null -> versionText.text = "현재 버전 v$current · 최신 버전을 확인하지 못했어요"
+                Updater.compare(rel.version, current) > 0 -> {
+                    versionText.text = "현재 버전 v$current · 새 버전 v${rel.version} 이 있어요"
+                    updateBtn.visibility = android.view.View.VISIBLE
+                    updateBtn.setOnClickListener { Updater.install(this, rel) { msg -> versionText.text = msg } }
+                }
+                else -> versionText.text = "현재 버전 v$current · 최신 버전이에요"
+            }
+        }
         status = TextView(this).apply { textSize = 16f; setPadding(0, pad / 2, 0, pad / 2) }
         col.addView(status)
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)

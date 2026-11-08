@@ -214,6 +214,7 @@ class GameSimTest {
                     for (rr in 0 until board.rows) println("    " + (0 until board.cols).joinToString(" ") { c -> board.cells[rr to c]?.kind?.toString()?.padEnd(3) ?: " . " })
                     println("    hand: " + me.joinToString(" ") { it.kind.toString() })
                     println("    plan: ${a.message} steps=${a.steps.map { "${it.number}:${it.moves.size}" }}")
+                    for (st in a.sets) println("      set#${st.number}${if (st.relaxed) "(축소)" else ""}: " + st.tiles.joinToString(" ") { t -> "${t.tile}@" + ((t.target ?: t.screen?.rect)?.let { cellOf(board, shot, it) }) })
                     for (m in a.moves) println("      ${if (m in prog.done) "✓" else " "} ${m.tile}${if (m.isPark) "(임시)" else ""} from ${(prog.source[m] ?: m.screen)?.rect?.let { cellOf(board, shot, it) }} to ${cellOf(board, shot, m.target!!)} set#${a.sets.firstOrNull { s -> m in s.tiles || m.parkFor in s.tiles }?.number}")
                 }
                 val left = a.moves.filter { it !in prog.done }

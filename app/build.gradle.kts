@@ -18,8 +18,8 @@ android {
         applicationId = "com.johun.rummiassist"
         minSdk = 30 // AccessibilityService.takeScreenshot
         targetSdk = 36
-        versionCode = 15
-        versionName = "1.12.1"
+        versionCode = 16
+        versionName = "1.13.0"
     }
 
     signingConfigs {

@@ -132,7 +132,8 @@ internal object Placement {
          */
         fun fits(r: Row, c0: Int, n: Int, owner: Int, stayAt: Set<Int> = emptySet(), strict: Boolean = true): Boolean {
             val range = colRange(r)
-            if (c0 < range.first || c0 + n - 1 > range.last) return false
+            // 기존 세트를 제자리에서 늘리는 경우(stayAt 있음)는 판 끝을 넘어가도 된다 — 게임이 판을 줄여 자리를 만든다
+            if (stayAt.isEmpty() && (c0 < range.first || c0 + n - 1 > range.last)) return false
             val o = occ[r] ?: emptyMap<Int, Int>()
             for (c in c0 - 1..c0 + n) { val who = o[c]; if (who != null && who != owner) return false }
             if (strict) { val cur = now[r] ?: emptySet<Int>(); for (c in c0..c0 + n - 1) if (c in cur && c !in stayAt) return false }
@@ -288,6 +289,12 @@ internal object Placement {
             free += rectOf(r, c) to crowd
         }
         val relaxedFlags = BooleanArray(sets.size)
+        // 판 끝을 넘어 붙인 세트는 게임이 판을 다시 배치하므로 '자동 축소' 세트로 표시(위치 검사 제외)
+        for (i in sets.indices) {
+            val sp = placed[i] ?: continue
+            val n = (finalTiles[i] ?: sets[i].tiles).size
+            if (sp.second < colRange(sp.first).first || sp.second + n - 1 > colRange(sp.first).last) relaxedFlags[i] = true
+        }
         if (relax) {
             // 자리 무시 배치: 게임이 판을 자동으로 줄여 자리를 만든다고 보고, 판 밖으로 나가도 놓는다.
             // 기존 세트 끝에 붙이는 건 이웃 세트와 겹쳐 보여도 게임이 자리를 만들어 준다(사용자 확인).

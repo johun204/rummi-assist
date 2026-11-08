@@ -362,6 +362,25 @@ object Advisor {
         return Advice(rec, steps.flatMap { it.sets }, a.keptSets, a.handPlayed, a.handValue, a.message, a.warnings, a.jokerHint, steps, a.overTime)
     }
 
+    /** 세트별로 목적지·남는 타일 위치를 (dx, dy) 만큼 옮긴 같은 계획(게임이 일부 세트를 밀었을 때) */
+    fun shiftSets(a: Advice, shifts: Map<PlanSet, Pair<Int, Int>>): Advice {
+        val map = java.util.IdentityHashMap<PlanTile, PlanTile>()
+        fun mv(r: Rect, d: Pair<Int, Int>) = Rect(r.left + d.first, r.top + d.second, r.right + d.first, r.bottom + d.second)
+        for (st in a.steps) for (s in st.sets) {
+            val d = shifts[s]
+            for (pt in s.tiles) {
+                val scr = if (d != null && pt.target == null && !pt.tile.fromHand) pt.screen?.let { it.copy(rect = mv(it.rect, d), glyph = mv(it.glyph, d)) } else pt.screen
+                map[pt] = PlanTile(pt.tile, scr, pt.target?.let { t -> if (d != null) mv(t, d) else t }).also { it.via = pt.via }
+            }
+        }
+        for (st in a.steps) for (m in st.moves) if (m.isPark) map[m] = PlanTile(m.tile, m.screen, m.target, parkFor = map[m.parkFor])
+        val steps = a.steps.map { st ->
+            Step(st.number, st.sets.map { s -> PlanSet(s.number, s.status, s.tiles.map { map[it]!! }, s.noRoom, s.step, s.relaxed) },
+                st.valid, st.moves.map { map[it]!! })
+        }
+        return Advice(a.recognized, steps.flatMap { it.sets }, a.keptSets, a.handPlayed, a.handValue, a.message, a.warnings, a.jokerHint, steps, a.overTime)
+    }
+
     /** 원래 판 세트 번호를 공유하는 것끼리 묶은 연결 요소(세트 번호 목록들) */
     private fun components(origSetsOf: List<Set<Int>>): List<List<Int>> {
         val parent = IntArray(origSetsOf.size) { it }

@@ -29,7 +29,7 @@ object Tracker {
         val w = med(now.map { it.rect.width })
         // 판이 그대로면(옛 판 타일 대부분이 같은 자리에 있음) 계획도 그대로 — 판 타일이 몇 장 안 될 때도 확실히
         val stay = old.count { o -> now.any { n -> n.kind == o.kind && abs(n.rect.cx - o.rect.cx) < w * 0.3 && abs(n.rect.cy - o.rect.cy) < w * 0.3 } }
-        if (abs(sc - 1) < 0.05 && stay * 10 >= old.size * 6) return advice
+        if (abs(sc - 1) < 0.05 && stay * 10 >= old.size * 6) return reanchor(advice, rec)
         val bin = w * 0.3
         val votes = HashMap<Pair<Int, Int>, MutableList<Pair<Double, Double>>>()
         for (o in old) for (n in now) if (o.kind == n.kind) {
@@ -42,11 +42,35 @@ object Tracker {
         if (best.size < need) return null
         val tx = best.sumOf { it.first } / best.size; val ty = best.sumOf { it.second } / best.size
         if (abs(sc - 1) < 0.02 && abs(tx) < w * 0.15 && abs(ty) < w * 0.15) return advice
-        return Advisor.remap(advice, rec) { r ->
+        return reanchor(Advisor.remap(advice, rec) { r ->
             val cx = sc * r.cx + tx; val cy = sc * r.cy + ty
             val hw = r.width * sc / 2; val hh = r.height * sc / 2
             Rect((cx - hw).roundToInt(), (cy - hh).roundToInt(), (cx + hw).roundToInt(), (cy + hh).roundToInt())
+        }, rec)
+    }
+
+    /**
+     * 게임이 판의 일부만 옆으로 밀어 자리를 만들면(세트 끝에 붙였을 때) 그 세트의 목적지도 같이 밀려야 한다.
+     * 판 타일이 남는 세트마다, 남는 타일들의 지금 위치(같은 종류 중 가장 가까운 것)로 옮겨 간 만큼 목적지를 옮긴다.
+     */
+    private fun reanchor(advice: Advisor.Advice, rec: Recognizer.Result): Advisor.Advice {
+        val (tw, th) = Placement.tileSize(rec)
+        val shifts = HashMap<Advisor.PlanSet, Pair<Int, Int>>()
+        for (st in advice.sets) {
+            val stays = st.tiles.filter { it.target == null && !it.tile.fromHand && it.screen != null }
+            if (stays.isEmpty() || st.tiles.none { it.target != null }) continue
+            val ds = stays.mapNotNull { pt ->
+                val o = pt.screen!!.rect
+                rec.board.filter { it.kind == pt.tile.kind }.minByOrNull { abs(it.rect.cx - o.cx) + abs(it.rect.cy - o.cy) }
+                    ?.takeIf { abs(it.rect.cx - o.cx) < tw * 1.6 && abs(it.rect.cy - o.cy) < th * 0.5 }
+                    ?.let { (it.rect.cx - o.cx) to (it.rect.cy - o.cy) }
+            }
+            if (ds.size != stays.size) continue
+            val dx = ds.map { it.first }.sorted()[ds.size / 2]; val dy = ds.map { it.second }.sorted()[ds.size / 2]
+            if (abs(dx) > tw * 0.4 || abs(dy) > th * 0.4) shifts[st] = dx to dy
         }
+        if (shifts.isEmpty()) return advice
+        return Advisor.shiftSets(advice, shifts)
     }
 
     /** 판+손패의 타일 구성이 같은가(타일을 뽑거나 상대가 내면 달라진다) */

@@ -152,4 +152,23 @@ class RegressionTest {
         val first = a.moves.first()
         assertTrue("첫 이동이 판 타일: ${first.tile}", first.tile.fromHand)
     }
+
+    /** 2026-11-08 제보: 판 오른쪽 끝의 K6 K7 K8 에 손패 K9 만 붙이면 되는데, 세트를 통째로 옮긴 뒤 붙이라고 안내 */
+    @Test fun attachAtBoardEdge() {
+        fun row(cy: Int, vararg x: Pair<Int, String>) = x.map { (c, s) -> tile(s, 367 + c * 115, cy) }
+        val sets = listOf(
+            row(220, 0 to "K11", 1 to "O11", 2 to "B11", 3 to "R11"),
+            row(395, 4 to "B2", 5 to "B3", 6 to "B4", 7 to "B5"),
+            row(740, 9 to "K6", 10 to "K7", 11 to "K8"),
+        )
+        val hand = listOf("K6", "K9", "B4", "B7", "O3", "O8", "O10", "R3", "R13", "R13").mapIndexed { i, s -> tile(s, 447 + i * 119, 1005, true) } +
+            listOf(tile("O6", 447, 1160, true))
+        val r = Recognizer.Result(sets.flatten() + hand, sets, 930, 1972, 1248)
+        val a = Advisor.advise(r, true, false, moveBudget = 6)
+        println("edge: ${a.message} 이동 ${a.moves.map { "${it.tile}" }}")
+        val k9 = a.sets.first { s -> s.tiles.any { it.tile.kind.toString() == "K9" } }
+        // K6 K7 K8 은 그대로, K9 한 장만 오른쪽 끝에 붙인다
+        assertTrue("판 타일을 옮김: ${k9.tiles.filter { it.target != null && !it.tile.fromHand }.map { it.tile }}",
+            k9.tiles.filter { !it.tile.fromHand }.all { it.target == null })
+    }
 }
